@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vx-org/vx-rez-packages/blob/main/schema/index.schema.json",
+  "title": "Rez Bundle Index",
+  "description": "Repository-level index of every published Rez bundle. See SPEC.md section 5.",
+  "type": "object",
+  "required": ["spec_version", "updated_at", "platforms", "packages"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "description": "Spec version this index conforms to.",
+      "type": "string",
+      "const": "1.0.0-draft"
+    },
+    "updated_at": {
+      "description": "RFC 3339 UTC timestamp of the last regeneration.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "platforms": {
+      "description": "Union of every platform published by this repository.",
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "windows-x86_64",
+          "windows-aarch64",
+          "windows-x86",
+          "linux-x86_64",
+          "linux-aarch64",
+          "linux-x86",
+          "macos-x86_64",
+          "macos-aarch64"
+        ]
+      },
+      "uniqueItems": true
+    },
+    "packages": {
+      "description": "One entry per published package name.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "versions", "platforms", "bundle"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "description": "Rez package name.",
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]*$"
+          },
+          "versions": {
+            "description": "All published versions, sorted ascending.",
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+)*$" },
+            "uniqueItems": true
+          },
+          "platforms": {
+            "description": "Platforms this package is published for.",
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "enum": [
+                "windows-x86_64",
+                "windows-aarch64",
+                "windows-x86",
+                "linux-x86_64",
+                "linux-aarch64",
+                "linux-x86",
+                "macos-x86_64",
+                "macos-aarch64"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "bundle": {
+            "description": "Repo-relative path to the newest version's bundle.json.",
+            "type": "string",
+            "pattern": "^bundles/[^/]+/[a-z][a-z0-9_]*/[0-9]+(\\.[0-9]+)*/bundle\\.json$"
+          }
+        }
+      }
+    }
+  }
+}

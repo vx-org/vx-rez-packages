@@ -1,0 +1,48 @@
+{
+  "spec_version": "1.0.0-draft",
+  "name": "python",
+  "version": "3.11.9",
+  "platform": "windows-x86_64",
+  "rez": {
+    "layout": "rez-package-root",
+    "package_root": "python/3.11.9",
+    "install_root": "python/3.11.9",
+    "package_file": "package.py"
+  },
+  "assets": [
+    {
+      "file_name": "python-3.11.9-windows-x86_64.tar.gz",
+      "format": "tar.gz",
+      "url": "https://github.com/vx-org/vx-rez-packages/releases/download/python-3.11.9-windows-x86_64/python-3.11.9-windows-x86_64.tar.gz",
+      "size": 748,
+      "sha256": "4239bd7944b20ec02d5f964ed33f3481e1f8ccd9b8985d6f5219072d90bde921"
+    },
+    {
+      "file_name": "python-3.11.9-windows-x86_64.zip",
+      "format": "zip",
+      "url": "https://github.com/vx-org/vx-rez-packages/releases/download/python-3.11.9-windows-x86_64/python-3.11.9-windows-x86_64.zip",
+      "size": 1533,
+      "sha256": "0ea5bbb993c200bc1577b633b0ac4927b92a2a6570f5a6dcc22c5fd34cf920e8"
+    }
+  ],
+  "requires": [],
+  "commands": [
+    {
+      "name": "python",
+      "relative_path": "python.exe"
+    },
+    {
+      "name": "pythonw",
+      "relative_path": "pythonw.exe"
+    }
+  ],
+  "build": {
+    "requirement": "python-3.11.9",
+    "generator": "make_bundle.py/1.0",
+    "generated_at": "2026-10-08T09:29:52Z",
+    "source": {
+      "type": "python-build-standalone",
+      "version": "3.11.9"
+    }
+  }
+}

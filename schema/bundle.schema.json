@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vx-org/vx-rez-packages/blob/main/schema/bundle.schema.json",
+  "title": "Rez Bundle Metadata",
+  "description": "Metadata for a single (package, version, platform) Rez bundle. See SPEC.md.",
+  "type": "object",
+  "required": ["spec_version", "name", "version", "platform", "rez", "assets"],
+  "additionalProperties": false,
+  "properties": {
+    "spec_version": {
+      "description": "Spec version this bundle conforms to.",
+      "type": "string",
+      "const": "1.0.0-draft"
+    },
+    "name": {
+      "description": "Rez package name.",
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$"
+    },
+    "version": {
+      "description": "Rez package version, dot-separated numeric components.",
+      "type": "string",
+      "pattern": "^[0-9]+(\\.[0-9]+)*$"
+    },
+    "platform": {
+      "description": "vx platform key: <os>-<arch>.",
+      "type": "string",
+      "enum": [
+        "windows-x86_64",
+        "windows-aarch64",
+        "windows-x86",
+        "linux-x86_64",
+        "linux-aarch64",
+        "linux-x86",
+        "macos-x86_64",
+        "macos-aarch64"
+      ]
+    },
+    "rez": {
+      "description": "How the bundle materialises as a rez package on disk.",
+      "type": "object",
+      "required": ["layout", "package_root", "install_root", "package_file"],
+      "additionalProperties": false,
+      "properties": {
+        "layout": {
+          "description": "Unpacked layout. Only 'rez-package-root' is defined.",
+          "type": "string",
+          "const": "rez-package-root"
+        },
+        "package_root": {
+          "description": "Path inside the archive of the directory holding package.py.",
+          "type": "string",
+          "pattern": "^(?!\\.\\.)[^\\\\:*?\"<>|]+$"
+        },
+        "install_root": {
+          "description": "Stable cache location, relative to the vx package cache root.",
+          "type": "string",
+          "pattern": "^(?!\\.\\.)[^\\\\:*?\"<>|]+$"
+        },
+        "package_file": {
+          "description": "Package definition file name inside package_root.",
+          "type": "string",
+          "const": "package.py"
+        },
+        "commands": { "$ref": "#/$defs/commands" }
+      }
+    },
+    "assets": {
+      "description": "Downloadable archives for this bundle.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["file_name", "format", "url", "size", "sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "file_name": {
+            "description": "Archive file name.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+\\.(tar\\.gz|zip)$"
+          },
+          "format": {
+            "description": "Archive format.",
+            "type": "string",
+            "enum": ["tar.gz", "zip"]
+          },
+          "url": {
+            "description": "Absolute download URL.",
+            "type": "string",
+            "format": "uri",
+            "pattern": "^https://"
+          },
+          "size": {
+            "description": "Archive size in bytes.",
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "sha256": {
+            "description": "Lowercase hex SHA-256 of the archive.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "requires": {
+      "description": "Rez request strings this package needs.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "commands": { "$ref": "#/$defs/commands" },
+    "build": {
+      "description": "Provenance: what produced this bundle.",
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "requirement": { "type": "string" },
+        "generator": { "type": "string" },
+        "generated_at": { "type": "string", "format": "date-time" },
+        "source": { "type": "object" }
+      }
+    }
+  },
+  "$defs": {
+    "commands": {
+      "description": "Rez command definitions contributed by this package.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+$"
+          },
+          "relative_path": {
+            "description": "Executable path relative to package_root.",
+            "type": "string",
+            "pattern": "^(?!\\.\\.)[^\\\\:*?\"<>|]+$"
+          }
+        }
+      }
+    }
+  }
+}

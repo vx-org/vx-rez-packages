@@ -1,0 +1,96 @@
+name: Validate Bundles
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate bundle format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate bundles and index
+        run: python scripts/validate_repo.py
+
+      - name: Run format tests
+        run: python -m unittest discover -s tests -v
+
+  # The index is derived data. Rebuilding it from the bundle tree must be a
+  # no-op, otherwise a contributor hand-edited index.json instead of
+  # regenerating it.
+  index-reproducible:
+    name: index.json is reproducible
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate index and check for drift
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          python scripts/make_bundle.py \
+            --source examples/python-3.11.9/src/python \
+            --platform windows-x86_64 \
+            --source-type python-build-standalone \
+            --source-version 3.11.9
+          if ! git diff --quiet -- index.json; then
+            echo "::error::index.json is out of date. Run scripts/make_bundle.py and commit the result."
+            git --no-pager diff -- index.json
+            exit 1
+          fi
+          echo "index.json matches the bundle tree"
+
+  # Proves the committed sample unpacks into the rez layout vx-rez-adapter
+  # consumes: <root>/<name>/<version>/package.py
+  unpack-layout:
+    name: Sample unpacks to rez layout
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Extract and verify layout
+        run: |
+          set -euo pipefail
+          bundle="bundles/windows-x86_64/python/3.11.9/bundle.json"
+          python - "$bundle" <<'PY'
+          import json, pathlib, sys, tarfile, zipfile
+
+          bundle_file = pathlib.Path(sys.argv[1])
+          bundle = json.loads(bundle_file.read_text(encoding="utf-8"))
+          root = bundle["rez"]["package_root"]
+          package_file = bundle["rez"]["package_file"]
+          expected = f"{root}/{package_file}"
+
+          for asset in bundle["assets"]:
+              archive = bundle_file.parent / "assets" / asset["file_name"]
+              if not archive.is_file():
+                  print(f"skip {archive.name}: not committed as an artifact")
+                  continue
+              if asset["format"] == "zip":
+                  names = zipfile.ZipFile(archive).namelist()
+              else:
+                  with tarfile.open(archive, "r:gz") as tar:
+                      names = tar.getnames()
+              if expected not in names:
+                  raise SystemExit(f"{archive.name} is missing {expected}")
+              print(f"ok {archive.name} contains {expected}")
+          PY

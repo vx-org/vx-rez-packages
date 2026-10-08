@@ -1,0 +1,8 @@
+# Keep text files LF in the repository so CI checkouts are byte-stable across
+# platforms. Without this, a checkout on a core.autocrlf=true machine writes
+# CRLF, and the validator's byte-level archive checks become platform-dependent.
+* text=auto eol=lf
+
+# Bundle archives and checksums must never be transformed.
+*.tar.gz binary
+*.zip binary

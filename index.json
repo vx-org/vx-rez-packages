@@ -1,0 +1,19 @@
+{
+  "spec_version": "1.0.0-draft",
+  "updated_at": "2026-10-08T09:29:52Z",
+  "platforms": [
+    "windows-x86_64"
+  ],
+  "packages": [
+    {
+      "name": "python",
+      "versions": [
+        "3.11.9"
+      ],
+      "platforms": [
+        "windows-x86_64"
+      ],
+      "bundle": "bundles/windows-x86_64/python/3.11.9/bundle.json"
+    }
+  ]
+}

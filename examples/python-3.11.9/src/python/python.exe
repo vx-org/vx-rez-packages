@@ -1,0 +1,5 @@
+@echo off
+rem Placeholder interpreter for the bundle format sample.
+rem A real bundle ships a full CPython payload; this stand-in exists so the
+rem fixture stays tiny, reviewable, and free of third-party binaries.
+echo Python 3.11.9 (vx-rez-packages sample bundle)
