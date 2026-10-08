@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vx-org/vx-rez-packages/schema/bundle-manifest-v1.json",
+  "title": "vx Rez bundle manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "tool",
+    "version",
+    "platform",
+    "arch",
+    "triple",
+    "asset_name",
+    "package_root",
+    "payload_root",
+    "upstream",
+    "checksums",
+    "compatibility"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "tool": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "platform": { "enum": ["windows", "linux", "osx"] },
+    "arch": { "enum": ["x86_64", "arm_64"] },
+    "triple": { "type": "string", "minLength": 1 },
+    "asset_name": { "type": "string", "pattern": "^[^/]+\\.rez\\.tar\\.zst$" },
+    "package_root": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
+    "payload_root": { "type": "string", "pattern": "^[^/]+/[^/]+/payload$" },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_url", "archive_url", "archive_sha256"],
+      "properties": {
+        "manifest_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "archive_url": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "archive_sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "checksums": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "file", "scope"],
+      "properties": {
+        "algorithm": { "const": "sha256" },
+        "file": { "type": "string", "pattern": "^[^/]+/[^/]+/sha256sums\\.txt$" },
+        "scope": { "type": "string", "minLength": 1 }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["rez_next", "vx_rez_adapter"],
+      "properties": {
+        "rez_next": { "type": "string", "minLength": 1 },
+        "vx_rez_adapter": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
