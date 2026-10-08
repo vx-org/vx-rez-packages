@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import platform as host_platform
 import posixpath
 import shutil
@@ -21,7 +22,9 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import jsonschema
+import py7zr
 import zstandard
+from py7zr.exceptions import AbsolutePathError, ArchiveError, PasswordRequired
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFINITION_SCHEMA = ROOT / "schema" / "bundle-definition.schema.json"
@@ -75,7 +78,7 @@ def build_bundle(
     output_directory.mkdir(parents=True, exist_ok=True)
     output_path = output_directory / asset_name
     with tempfile.TemporaryDirectory(prefix="vx-rez-bundle-") as temporary:
-        work = Path(temporary)
+        work = Path(temporary).resolve()
         source = source_archive
         if source is None:
             source = work / "upstream-payload"
@@ -111,7 +114,9 @@ def build_bundle(
         _write_repository_checksums(repository, package_root / "sha256sums.txt")
         if smoke_test:
             _assert_native_target(target)
-            _smoke_test(package_root, definition, target)
+            smoke_root = work / "smoke" / tool / version
+            shutil.copytree(package_root, smoke_root)
+            _smoke_test(smoke_root, definition, target)
         _write_reproducible_tar_zstd(
             repository,
             output_path,
@@ -186,13 +191,13 @@ def _safe_relative(name: str, *, allow_root: bool = False) -> str:
     ):
         raise BundleError(f"unsafe relative path: {name!r}")
     for part in parts:
-        reserved = part.split(".")[0].upper()
+        reserved = part.split(".")[0].rstrip(" ").upper()
         if (
             part.endswith((".", " "))
             or any(ord(character) < 32 or character in '<>"|?*' for character in part)
-            or reserved in {"CON", "PRN", "AUX", "NUL"}
-            or reserved in {f"COM{number}" for number in range(1, 10)}
-            or reserved in {f"LPT{number}" for number in range(1, 10)}
+            or reserved in {"CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"}
+            or reserved in {f"COM{number}" for number in "123456789¹²³"}
+            or reserved in {f"LPT{number}" for number in "123456789¹²³"}
         ):
             raise BundleError(f"non-portable relative path: {name!r}")
     return "/".join(parts)
@@ -245,6 +250,50 @@ def _validate_archive_entries(entries: list[tuple[str, str, str | None]]) -> Non
             raise BundleError(f"archive hardlink must name a regular file: {seen[key]!r}")
 
 
+def _seven_zip_entries(archive: py7zr.SevenZipFile) -> tuple[list[tuple[str, str, None]], set[str]]:
+    """Inspect raw 7z attributes; public list() omits reparse/device bits and Unix modes.
+
+    py7zr 1.1.x exposes parsed member metadata before extracting payload streams.
+    Only unambiguous regular files and directories are admitted. Windows reparse
+    points cover junction/link encodings even on a non-Windows build host.
+    """
+    entries = []
+    executables = set()
+    for member in archive.files:
+        properties = member.file_properties()
+        attributes = properties.get("attributes")
+        if type(attributes) is not int or not 0 <= attributes <= 0xFFFFFFFF:
+            raise BundleError(f"7z member lacks explicit type attributes: {member.filename!r}")
+        # These constants are format bits, independent of the extraction host OS.
+        if attributes & (0x0400 | 0x0040):
+            raise BundleError(f"unsupported 7z reparse point or device: {member.filename!r}")
+        if properties.get("startpos") is not None or any(
+            properties.get(key)
+            for key in ("is_hardlink", "hardlink", "linkname", "linkpath", "reparse")
+        ):
+            raise BundleError(f"unsupported 7z link or special metadata: {member.filename!r}")
+        is_directory = bool(attributes & 0x0010)
+        unix_mode = attributes >> 16 if attributes & 0x8000 else None
+        if unix_mode is not None and stat.S_IFMT(unix_mode) != (
+            stat.S_IFDIR if is_directory else stat.S_IFREG
+        ):
+            raise BundleError(f"unsupported or ambiguous 7z Unix member type: {member.filename!r}")
+        if (
+            member.is_symlink
+            or member.is_junction
+            or member.is_socket
+            or member.is_directory != is_directory
+            or member.is_file != (not is_directory)
+        ):
+            raise BundleError(f"unsupported or ambiguous 7z member type: {member.filename!r}")
+        name = member.filename.rstrip("/") if is_directory else member.filename
+        entries.append((name, "dir" if is_directory else "file", None))
+        if not is_directory and unix_mode is not None and unix_mode & 0o111:
+            executables.add(name)
+    _validate_archive_entries(entries)
+    return entries, executables
+
+
 def _extract_archive(source: Path, destination: Path, archive_format: str) -> set[str]:
     destination.mkdir()
     executables = set()
@@ -276,6 +325,12 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> se
                         with archive.open(member) as input_file, path.open("wb") as output:
                             shutil.copyfileobj(input_file, output)
                         path.chmod(0o755 if (member.external_attr >> 16) & 0o111 else 0o644)
+        elif archive_format == "7z":
+            with py7zr.SevenZipFile(source, mode="r") as archive:
+                if archive.needs_password():
+                    raise BundleError("encrypted 7z payloads are unsupported")
+                _, executables = _seven_zip_entries(archive)
+                archive.extractall(path=destination)
         else:
             with tarfile.open(source, "r:*") as archive:
                 members = archive.getmembers()
@@ -307,7 +362,16 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> se
                 archive.extractall(destination, members=members, filter="data")
         _audit_links(destination)
         return executables
-    except (tarfile.TarError, zipfile.BadZipFile, OSError, ValueError) as error:
+    except (
+        tarfile.TarError,
+        zipfile.BadZipFile,
+        ArchiveError,
+        AbsolutePathError,
+        PasswordRequired,
+        OSError,
+        TypeError,
+        ValueError,
+    ) as error:
         raise BundleError(f"failed to safely extract {source}: {error}") from error
 
 
@@ -559,14 +623,37 @@ def _smoke_test(package_root: Path, definition: dict, target: dict) -> None:
     except (OSError, ValueError) as error:
         raise BundleError("smoke command must execute a file inside this package") from error
     try:
-        result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            timeout=smoke.get("timeout_seconds", 60),
-            cwd=package_root,
-        )
+        with tempfile.TemporaryDirectory(prefix="vx-rez-smoke-home-") as temporary:
+            home = Path(temporary)
+            environment = os.environ.copy()
+            for variable in ("PYTHONHOME", "PYTHONPATH"):
+                environment.pop(variable, None)
+            environment["PYTHONDONTWRITEBYTECODE"] = "1"
+            for variable in ("HOME", "USERPROFILE"):
+                environment[variable] = str(home)
+            for variable, child in {
+                "XDG_CONFIG_HOME": "config",
+                "XDG_CACHE_HOME": "cache",
+                "XDG_DATA_HOME": "data",
+                "XDG_STATE_HOME": "state",
+                "APPDATA": "roaming",
+                "LOCALAPPDATA": "local",
+                "TMPDIR": "temp",
+                "TMP": "temp",
+                "TEMP": "temp",
+            }.items():
+                directory = home / child
+                directory.mkdir(exist_ok=True)
+                environment[variable] = str(directory)
+            result = subprocess.run(
+                command,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=smoke.get("timeout_seconds", 60),
+                cwd=package_root,
+                env=environment,
+            )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
         raise BundleError(f"native smoke test failed: {error}") from error
     expected = smoke["expect"].format_map(substitutions)

@@ -77,7 +77,24 @@ jobs:
         with:
           python-version: "3.12"
           architecture: ${{ matrix.target.arch == 'arm_64' && 'arm64' || 'x64' }}
+      - name: Bootstrap verified x64 VX on Windows ARM
+        if: runner.os == 'Windows' && runner.arch == 'ARM64'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $archive = Join-Path $env:RUNNER_TEMP 'vx-0.9.35-x64.zip'
+          Invoke-WebRequest 'https://github.com/loonghao/vx/releases/download/v0.9.35/vx-0.9.35-x86_64-pc-windows-msvc.zip' -OutFile $archive
+          $expected = '514d1f69141ba334c7338ce97673f01c037162e1c6d71848d0d727d8bb40f621'
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'VX bootstrap checksum mismatch' }
+          $install = Join-Path $env:RUNNER_TEMP 'vx-bootstrap'
+          Expand-Archive -LiteralPath $archive -DestinationPath $install
+          $binary = Get-ChildItem -LiteralPath $install -Recurse -Filter vx.exe | Select-Object -First 1
+          if (-not $binary) { throw 'VX bootstrap executable missing' }
+          $binary.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & $binary.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw 'VX bootstrap execution failed' }
       - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+        if: runner.os != 'Windows' || runner.arch != 'ARM64'
         with:
           tools: uv
           cache: "true"

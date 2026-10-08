@@ -3,14 +3,17 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import stat
 import subprocess
 import tarfile
 import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import py7zr
 import zstandard
 
 from tools.build_bundle import (
@@ -18,6 +21,7 @@ from tools.build_bundle import (
     _extract_archive,
     _materialize_links,
     _normalize_machine,
+    _seven_zip_entries,
     _validate_archive_entries,
     build_bundle,
     load_definition,
@@ -185,13 +189,16 @@ class BundleContractTests(unittest.TestCase):
             first.with_name(first.name + ".sha256").read_text(), f"{digest(first)}  {first.name}\n"
         )
 
-    def test_supports_zip_and_tar_with_the_same_contract(self) -> None:
-        for archive_format in ("zip", "tar"):
+    def test_supports_zip_tar_and_7z_with_the_same_contract(self) -> None:
+        for archive_format in ("zip", "tar", "7z"):
             with self.subTest(archive_format=archive_format):
                 source = self.root / f"source.{archive_format}"
                 if archive_format == "zip":
                     with zipfile.ZipFile(source, "w") as archive:
                         archive.writestr("bin/fixture.exe", b"executable")
+                elif archive_format == "7z":
+                    with py7zr.SevenZipFile(source, "w") as archive:
+                        archive.writestr(b"executable", "bin/fixture.exe")
                 else:
                     with tarfile.open(source, "w:gz") as archive:
                         member = tarfile.TarInfo("bin/fixture.exe")
@@ -209,6 +216,105 @@ class BundleContractTests(unittest.TestCase):
                     ).read_bytes(),
                     b"executable",
                 )
+
+    def test_7z_directory_mapping_preserves_resources_and_executable_intent(self) -> None:
+        source = self.root / "application.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"executable", "app/bin/fixture.exe")
+            archive.files[0].file_properties()["attributes"] = 0x8020 | (
+                (stat.S_IFREG | 0o755) << 16
+            )
+            archive.writestr(b"resource", "app/resources/data")
+        definition = recipe(self.root, source, "7z")
+        definition["targets"][0]["payload"]["mappings"] = [{"source": "app", "destination": "."}]
+        asset = self.build(definition, source)
+        unpack(asset, self.root / "7z-app")
+        self.assertEqual(
+            (self.root / "7z-app/fixture/1.2.3/payload/resources/data").read_bytes(), b"resource"
+        )
+        self.assertEqual(archive_modes(asset)["fixture/1.2.3/payload/bin/fixture.exe"], 0o755)
+
+    def test_7z_rejects_unsafe_names_before_any_payload_extraction(self) -> None:
+        cases = [
+            ["../outside"],
+            ["/absolute"],
+            ["C:/escape"],
+            ["payload:stream"],
+            ["CON.txt"],
+            ["COM¹.txt"],
+            ["LPT³"],
+            ["CONIN$"],
+            ["name."],
+            ["file", "FILE"],
+            ["Dir/file", "dir/other"],
+            ["file", "file"],
+            ["file", "file/child"],
+        ]
+        for index, names in enumerate(cases):
+            with self.subTest(names=names):
+                source = self.root / f"unsafe-{index}.7z"
+                with py7zr.SevenZipFile(source, "w") as archive:
+                    for item, name in enumerate(names):
+                        archive.writestr(b"data", f"entry-{item}")
+                        archive.files[item].file_properties()["filename"] = name
+                with (
+                    patch.object(py7zr.SevenZipFile, "extractall") as extract,
+                    self.assertRaises(BundleError),
+                ):
+                    _extract_archive(source, self.root / f"unsafe-output-{index}", "7z")
+                extract.assert_not_called()
+                self.assertFalse((self.root / "outside").exists())
+
+    def test_7z_rejects_links_devices_and_missing_type_metadata_before_extraction(self) -> None:
+        attributes = [
+            0x0420,
+            0x0410,
+            0x0040,
+            None,
+            0x8020 | ((stat.S_IFLNK | 0o777) << 16),
+            0x8020 | ((stat.S_IFIFO | 0o644) << 16),
+            0x8020 | ((stat.S_IFCHR | 0o644) << 16),
+            0x8020 | ((stat.S_IFSOCK | 0o644) << 16),
+            0x8010 | ((stat.S_IFREG | 0o644) << 16),
+        ]
+        for index, flags in enumerate(attributes):
+            with self.subTest(attributes=flags):
+                source = self.root / f"special-{index}.7z"
+                with py7zr.SevenZipFile(source, "w") as archive:
+                    archive.writestr(b"link target or data", "member")
+                    archive.files[0].file_properties()["attributes"] = flags
+                with (
+                    patch.object(py7zr.SevenZipFile, "extractall") as extract,
+                    self.assertRaises(BundleError),
+                ):
+                    _extract_archive(source, self.root / f"special-output-{index}", "7z")
+                extract.assert_not_called()
+
+    def test_7z_rejects_hardlink_and_start_position_metadata(self) -> None:
+        for special in ({"hardlink": "target"}, {"is_hardlink": True}, {"startpos": 0}):
+            member = SimpleNamespace(
+                filename="file",
+                is_directory=False,
+                is_file=True,
+                is_symlink=False,
+                is_junction=False,
+                is_socket=False,
+                file_properties=lambda extra=special: {"attributes": 0x0020, **extra},
+            )
+            with self.subTest(special=special), self.assertRaisesRegex(BundleError, "metadata"):
+                _seven_zip_entries(SimpleNamespace(files=[member]))
+
+    def test_7z_hash_is_checked_before_opening_and_malformed_streams_fail_closed(self) -> None:
+        definition = recipe(self.root, self.source, "7z")
+        definition["targets"][0]["upstream"]["sha256"] = "0" * 64
+        with (
+            patch.object(py7zr, "SevenZipFile") as open_archive,
+            self.assertRaisesRegex(BundleError, "checksum mismatch"),
+        ):
+            self.build(definition)
+        open_archive.assert_not_called()
+        with self.assertRaisesRegex(BundleError, "safely extract"):
+            _extract_archive(self.source, self.root / "malformed-7z", "7z")
 
     def test_whole_directory_mapping_preserves_application_resources(self) -> None:
         source = self.root / "application.zip"
@@ -349,6 +455,30 @@ class BundleContractTests(unittest.TestCase):
             self.build(smoke_test=True)
             self.assertEqual(run.call_args.args[0][1:], ["--version"])
             self.assertFalse(run.call_args.kwargs.get("shell", False))
+
+    def test_smoke_writes_only_to_an_isolated_copy_and_home(self) -> None:
+        observed_homes = []
+
+        def mutating_smoke(command, **kwargs):
+            working = Path(kwargs["cwd"])
+            (working / "created-by-smoke").write_text("must not ship", encoding="utf-8")
+            home = Path(kwargs["env"]["HOME"])
+            observed_homes.append(home)
+            (home / "configuration").write_text("must not persist", encoding="utf-8")
+            self.assertEqual(kwargs["env"]["PYTHONDONTWRITEBYTECODE"], "1")
+            self.assertNotIn("PYTHONPATH", kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, "fixture 1.2.3", "")
+
+        with (
+            patch("tools.build_bundle.host_platform.system", return_value="Windows"),
+            patch("tools.build_bundle.host_platform.machine", return_value="AMD64"),
+            patch("tools.build_bundle.subprocess.run", side_effect=mutating_smoke),
+        ):
+            asset = self.build(smoke_test=True)
+        clean = self.build(output="without-smoke")
+        self.assertEqual(asset.read_bytes(), clean.read_bytes())
+        self.assertFalse(any(home.exists() for home in observed_homes))
+        self.assertFalse(any("created-by-smoke" in name for name in archive_modes(asset)))
 
     def test_release_index_preserves_the_consumer_v1_contract(self) -> None:
         asset = self.build()
