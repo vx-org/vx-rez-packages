@@ -86,10 +86,10 @@ def build_bundle(
         package_root = repository / tool / version
         payload_root = package_root / "payload"
         payload_root.mkdir(parents=True)
-        _install_payload(source, work / "source", payload_root, target["payload"])
+        executables = _install_payload(source, work / "source", payload_root, target["payload"])
         _install_metadata(definition, metadata_directory, package_root)
         _audit_links(payload_root)
-        _materialize_links(payload_root)
+        _materialize_links(payload_root, executables)
         _write_package_definition(package_root, definition, target)
         _write_system_package(repository, "platform", target["platform"])
         _write_system_package(repository, "arch", target["arch"])
@@ -112,7 +112,12 @@ def build_bundle(
         if smoke_test:
             _assert_native_target(target)
             _smoke_test(package_root, definition, target)
-        _write_reproducible_tar_zstd(repository, output_path, definition["release_date"])
+        _write_reproducible_tar_zstd(
+            repository,
+            output_path,
+            definition["release_date"],
+            executable_paths={f"{tool}/{version}/payload/{path}" for path in executables},
+        )
     output_path.with_name(f"{asset_name}.sha256").write_text(
         f"{_sha256(output_path)}  {asset_name}\n", encoding="utf-8", newline="\n"
     )
@@ -240,8 +245,9 @@ def _validate_archive_entries(entries: list[tuple[str, str, str | None]]) -> Non
             raise BundleError(f"archive hardlink must name a regular file: {seen[key]!r}")
 
 
-def _extract_archive(source: Path, destination: Path, archive_format: str) -> None:
+def _extract_archive(source: Path, destination: Path, archive_format: str) -> set[str]:
     destination.mkdir()
+    executables = set()
     try:
         if archive_format == "zip":
             with zipfile.ZipFile(source) as archive:
@@ -256,6 +262,8 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> No
                     elif stat.S_IFMT(mode) not in {0, stat.S_IFREG, stat.S_IFDIR}:
                         raise BundleError(f"unsupported zip member: {member.filename!r}")
                     entries.append((member.filename.rstrip("/"), kind, link))
+                    if kind == "file" and mode & 0o111:
+                        executables.add(member.filename.rstrip("/"))
                 _validate_archive_entries(entries)
                 for member, (name, kind, link) in zip(members, entries, strict=True):
                     path = destination / name
@@ -290,14 +298,21 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> No
                             member.linkname if member.issym() or member.islnk() else None,
                         )
                     )
+                    if member.isfile() and member.mode & 0o111:
+                        executables.add(member.name.rstrip("/"))
                 _validate_archive_entries(entries)
+                for member in members:
+                    if member.islnk() and (member.mode & 0o111 or member.linkname in executables):
+                        executables.add(member.name.rstrip("/"))
                 archive.extractall(destination, members=members, filter="data")
         _audit_links(destination)
+        return executables
     except (tarfile.TarError, zipfile.BadZipFile, OSError, ValueError) as error:
         raise BundleError(f"failed to safely extract {source}: {error}") from error
 
 
-def _install_payload(source: Path, extracted: Path, payload: Path, specification: dict) -> None:
+def _install_payload(source: Path, extracted: Path, payload: Path, specification: dict) -> set[str]:
+    executables = set()
     if specification["format"] == "binary":
         mapping = specification["mappings"][0]
         if mapping["source"] != ".":
@@ -306,8 +321,17 @@ def _install_payload(source: Path, extracted: Path, payload: Path, specification
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
         destination.chmod(0o755 if mapping.get("executable", False) else 0o644)
-        return
-    _extract_archive(source, extracted, specification["format"])
+        return {mapping["destination"]} if mapping.get("executable", False) else set()
+    source_executables = _extract_archive(source, extracted, specification["format"])
+
+    def copy_with_mode(entry: Path, destination: Path) -> None:
+        _copy_entry(entry, destination)
+        if (
+            entry.is_file()
+            and entry.resolve().relative_to(extracted).as_posix() in source_executables
+        ):
+            executables.add(destination.relative_to(payload).as_posix())
+
     for mapping in specification["mappings"]:
         entry = extracted / mapping["source"]
         destination = payload / mapping["destination"]
@@ -316,14 +340,16 @@ def _install_payload(source: Path, extracted: Path, payload: Path, specification
         if entry.is_dir():
             for child in sorted(entry.rglob("*")):
                 relative = child.relative_to(entry)
-                _copy_entry(child, destination / relative)
+                copy_with_mode(child, destination / relative)
         else:
-            _copy_entry(entry, destination)
+            copy_with_mode(entry, destination)
         if mapping.get("executable", False):
             if not destination.is_file():
                 raise BundleError("executable mapping must name one regular file")
             destination.chmod(0o755)
+            executables.add(destination.relative_to(payload).as_posix())
     _check_payload_collisions(payload)
+    return executables
 
 
 def _copy_entry(source: Path, destination: Path) -> None:
@@ -361,11 +387,14 @@ def _audit_links(root: Path) -> None:
                 ) from error
 
 
-def _materialize_links(root: Path) -> None:
+def _materialize_links(root: Path, executable_paths: set[str] | None = None) -> None:
     """Preserve internal aliases as regular content for portable, fully hashed repositories."""
     links = [path for path in root.rglob("*") if path.is_symlink()]
+    executables = executable_paths if executable_paths is not None else set()
 
-    def copy_resolved(source: Path, destination: Path, ancestors: frozenset[Path]) -> None:
+    def copy_resolved(
+        source: Path, destination: Path, ancestors: frozenset[Path], logical_path: Path
+    ) -> None:
         resolved = source.resolve(strict=True)
         try:
             resolved.relative_to(root.resolve())
@@ -376,14 +405,22 @@ def _materialize_links(root: Path) -> None:
                 raise BundleError(f"payload directory link cycle: {source.name!r}")
             destination.mkdir()
             for child in sorted(resolved.iterdir()):
-                copy_resolved(child, destination / child.name, ancestors | {resolved})
+                copy_resolved(
+                    child,
+                    destination / child.name,
+                    ancestors | {resolved},
+                    logical_path / child.name,
+                )
         else:
             shutil.copyfile(resolved, destination)
-            destination.chmod(0o755 if resolved.stat().st_mode & 0o111 else 0o644)
+            is_executable = resolved.relative_to(root).as_posix() in executables
+            destination.chmod(0o755 if is_executable else 0o644)
+            if is_executable:
+                executables.add(logical_path.as_posix())
 
     for index, link in enumerate(links):
         staging = root.parent / f"materialized-link-{index}"
-        copy_resolved(link, staging, frozenset(link.parents))
+        copy_resolved(link, staging, frozenset(link.parents), link.relative_to(root))
         link.unlink()
         staging.replace(link)
 
@@ -537,14 +574,16 @@ def _smoke_test(package_root: Path, definition: dict, target: dict) -> None:
         raise BundleError(f"unexpected smoke output: {result.stdout!r} {result.stderr!r}")
 
 
-def _write_reproducible_tar_zstd(repository: Path, output: Path, release_date: str) -> None:
+def _write_reproducible_tar_zstd(
+    repository: Path, output: Path, release_date: str, *, executable_paths: set[str]
+) -> None:
     epoch = int(datetime.fromisoformat(release_date).replace(tzinfo=UTC).timestamp())
 
     def normalize(info: tarfile.TarInfo) -> tarfile.TarInfo:
         info.uid = info.gid = 0
         info.uname = info.gname = ""
         info.mtime = epoch
-        info.mode = 0o755 if info.isdir() or info.mode & 0o111 else 0o644
+        info.mode = 0o755 if info.isdir() or info.name in executable_paths else 0o644
         if info.issym():
             info.mode = 0o777
         return info

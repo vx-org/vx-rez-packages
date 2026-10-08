@@ -39,7 +39,9 @@ There are no runtime-specific branches in the builder.
 The builder checks the upstream SHA-256 before extraction, validates the full
 archive member graph, rejects traversal, escaping links, device files and portable
 path collisions, and checks copied links again. It writes deterministic sorted
-TAR/Zstandard output with normalized timestamps, owners and modes. Every regular
+TAR/Zstandard output with normalized timestamps, owners and modes. Executable
+intent comes from the recipe and upstream archive metadata, so Windows
+cross-packaging preserves POSIX execution permissions. Every regular
 repository file except the checksum list itself is hashed. Upstream license and
 third-party notice files are digest-pinned recipe inputs and included in every
 target. `tools.collect_notices` collects actual legal texts from a verified source
@@ -70,3 +72,16 @@ a draft, downloads every uploaded asset and compares its names and SHA-256 with
 the validated local release before making the draft public. The workflow then
 reads back public release metadata and checksum companions; installed VX
 acceptance remains a separate consumer gate.
+
+The verification harness provisions a repository from an independently pinned
+index and checks the selected archive plus every regular repository file. From
+the builder checkout, use the published index URL and its verified SHA-256:
+
+```bash
+vx uv run --locked python -m tools.cache_bundle --index-url "$INDEX_URL" --index-sha256 "$INDEX_SHA256" --tool witr --version 0.3.4 --platform windows --arch x86_64 --cache .cache/rez
+vx uv run --locked python -m tools.cache_bundle --index-url "$INDEX_URL" --index-sha256 "$INDEX_SHA256" --tool witr --version 0.3.4 --platform windows --arch x86_64 --cache .cache/rez --offline
+```
+
+The second command re-verifies cached content without network access and returns
+the repository directory for an SDK consumer. This harness owns no solver or
+environment semantics and is separate from installed VX acceptance.

@@ -101,6 +101,15 @@ def unpack(archive: Path, destination: Path) -> None:
         bundle.extractall(destination, filter="data")
 
 
+def archive_modes(archive: Path) -> dict[str, int]:
+    with (
+        archive.open("rb") as source,
+        zstandard.ZstdDecompressor().stream_reader(source) as reader,
+        tarfile.open(fileobj=reader, mode="r|") as bundle,
+    ):
+        return {member.name: member.mode for member in bundle}
+
+
 class BundleContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -131,6 +140,17 @@ class BundleContractTests(unittest.TestCase):
         self.source.touch()
         second = self.build(output="second")
         self.assertEqual(first.read_bytes(), second.read_bytes())
+        original_gettarinfo = tarfile.TarFile.gettarinfo
+
+        def without_posix_mode(archive, *args, **kwargs):
+            info = original_gettarinfo(archive, *args, **kwargs)
+            info.mode = 0o644
+            return info
+
+        with patch.object(tarfile.TarFile, "gettarinfo", new=without_posix_mode):
+            windows_modes = self.build(output="windows-modes")
+        self.assertEqual(first.read_bytes(), windows_modes.read_bytes())
+        self.assertEqual(archive_modes(first)["fixture/1.2.3/payload/bin/fixture.exe"], 0o755)
         unpack(first, self.root / "unpacked")
         repository = self.root / "unpacked"
         package = repository / "fixture" / "1.2.3"
@@ -202,6 +222,18 @@ class BundleContractTests(unittest.TestCase):
         self.assertEqual(
             (self.root / "app/fixture/1.2.3/payload/resources/data").read_bytes(), b"resource"
         )
+
+    def test_directory_mapping_preserves_upstream_executable_metadata(self) -> None:
+        source = self.root / "application.tar"
+        with tarfile.open(source, "w") as archive:
+            member = tarfile.TarInfo("app/bin/fixture.exe")
+            member.size = 10
+            member.mode = 0o755
+            archive.addfile(member, io.BytesIO(b"executable"))
+        definition = recipe(self.root, source, "tar")
+        definition["targets"][0]["payload"]["mappings"] = [{"source": "app", "destination": "."}]
+        asset = self.build(definition, source)
+        self.assertEqual(archive_modes(asset)["fixture/1.2.3/payload/bin/fixture.exe"], 0o755)
 
     def test_checks_upstream_hash_before_attempting_extraction(self) -> None:
         definition = recipe(self.root, self.source, "zip")
