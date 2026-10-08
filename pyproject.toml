@@ -1,0 +1,19 @@
+[project]
+name = "vx-rez-packages-tools"
+version = "0.1.0"
+description = "Reproducible builders and index tooling for vx Rez bundles"
+requires-python = ">=3.12"
+dependencies = [
+  "jsonschema>=4.26,<5",
+  "zstandard>=0.25,<1",
+]
+
+[dependency-groups]
+dev = ["ruff>=0.16,<0.17"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

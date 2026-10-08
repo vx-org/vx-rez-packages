@@ -1,0 +1,8 @@
+[tools]
+actionlint = "latest"
+python = "3.12.10"
+uv = "latest"
+
+[settings]
+auto_install = true
+cache_duration = "7d"

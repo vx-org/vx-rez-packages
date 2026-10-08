@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/vx-org/vx-rez-packages/schema/bundle-definition-v1.json",
+  "title": "Real runtime Rez package recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "tool", "version", "release_date", "upstream_manifest", "compatibility", "package", "provenance", "metadata", "targets", "unsupported_targets"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "tool": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+    "version": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._+-]*$"},
+    "release_date": {"type": "string", "format": "date"},
+    "upstream_manifest": {"$ref": "#/$defs/https"},
+    "compatibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["rez_next", "vx_rez_adapter"],
+      "properties": {"rez_next": {"type": "string", "minLength": 1}, "vx_rez_adapter": {"type": "string", "minLength": 1}}
+    },
+    "package": {
+      "type": "object", "additionalProperties": false,
+      "required": ["description", "tools", "path_entries", "smoke_test"],
+      "properties": {
+        "description": {"type": "string", "minLength": 1},
+        "tools": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-zA-Z0-9][a-zA-Z0-9._-]*$"}},
+        "path_entries": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "smoke_test": {
+          "type": "object", "additionalProperties": false,
+          "required": ["command", "expect"],
+          "properties": {
+            "command": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+            "expect": {"type": "string", "minLength": 1},
+            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 600}
+          }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository", "revision", "license", "source_url", "source_sha256"],
+      "properties": {
+        "repository": {"$ref": "#/$defs/https"},
+        "revision": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "license": {"type": "string", "minLength": 1},
+        "source_url": {"$ref": "#/$defs/https"},
+        "source_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "metadata": {
+      "type": "array", "minItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["source", "destination", "sha256"],
+        "properties": {"source": {"type": "string", "minLength": 1}, "destination": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
+      }
+    },
+    "targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/target"}},
+    "unsupported_targets": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["triple", "status", "reason"],
+        "properties": {"triple": {"type": "string", "pattern": "^[a-zA-Z0-9_-]+$"}, "status": {"const": "unsupported"}, "reason": {"type": "string", "minLength": 1}}
+      }
+    }
+  },
+  "$defs": {
+    "https": {"type": "string", "format": "uri", "pattern": "^https://"},
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "target": {
+      "type": "object", "additionalProperties": false,
+      "required": ["triple", "platform", "arch", "runner", "status", "upstream", "payload"],
+      "properties": {
+        "triple": {"type": "string", "pattern": "^[a-zA-Z0-9_-]+$"},
+        "platform": {"enum": ["windows", "linux", "osx"]},
+        "arch": {"enum": ["x86_64", "arm_64"]},
+        "runner": {"type": "string", "minLength": 1},
+        "status": {"const": "supported"},
+        "upstream": {
+          "type": "object", "additionalProperties": false, "required": ["url", "sha256"],
+          "properties": {"url": {"$ref": "#/$defs/https"}, "sha256": {"$ref": "#/$defs/sha256"}}
+        },
+        "payload": {
+          "type": "object", "additionalProperties": false, "required": ["format", "mappings"],
+          "properties": {
+            "format": {"enum": ["binary", "zip", "tar"]},
+            "mappings": {
+              "type": "array", "minItems": 1,
+              "items": {
+                "type": "object", "additionalProperties": false, "required": ["source", "destination"],
+                "properties": {"source": {"type": "string", "minLength": 1}, "destination": {"type": "string", "minLength": 1}, "executable": {"type": "boolean"}}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
