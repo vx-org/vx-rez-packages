@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import stat
 import subprocess
 import tarfile
@@ -11,16 +12,18 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import py7zr
 import zstandard
 
 from tools.build_bundle import (
     BundleError,
+    _audit_native_tree,
     _extract_archive,
     _materialize_links,
     _normalize_machine,
+    _read_package_definition,
     _seven_zip_entries,
     _validate_archive_entries,
     build_bundle,
@@ -39,6 +42,12 @@ def digest(path: Path) -> str:
 def recipe(directory: Path, source: Path, archive_format: str = "binary") -> dict:
     license_file = directory / "LICENSE"
     license_file.write_text("Fixture upstream license\n", encoding="utf-8")
+    package_file = directory / "package.py"
+    package_file.write_bytes(
+        b"name = 'fixture'\nversion = '1.2.3'\ntools = ['fixture']\n"
+        b"requires = ['platform-windows', 'arch-x86_64']\n\n"
+        b"def commands():\n    env.PATH.prepend('{root}/payload/bin')\n"
+    )
     return {
         "schema_version": 1,
         "tool": "fixture",
@@ -47,6 +56,7 @@ def recipe(directory: Path, source: Path, archive_format: str = "binary") -> dic
         "upstream_manifest": "https://example.invalid/SHA256SUMS",
         "compatibility": {"rez_next": ">=0.3.6", "vx_rez_adapter": ">=0.1.0"},
         "package": {
+            "definition": {"source": "package.py", "sha256": digest(package_file)},
             "description": "Contract test runtime",
             "tools": ["fixture"],
             "path_entries": ["payload/bin"],
@@ -189,8 +199,107 @@ class BundleContractTests(unittest.TestCase):
             first.with_name(first.name + ".sha256").read_text(), f"{digest(first)}  {first.name}\n"
         )
 
-    def test_supports_zip_tar_and_7z_with_the_same_contract(self) -> None:
-        for archive_format in ("zip", "tar", "7z"):
+    def pin_package(self, contents: bytes) -> None:
+        source = self.root / "package.py"
+        source.write_bytes(contents)
+        self.definition["package"]["definition"]["sha256"] = digest(source)
+
+    def test_copies_actual_package_definition_bytes_and_semantics_without_execution(self) -> None:
+        contents = (
+            b"# checked-in package definition\r\n"
+            b"name: str = 'fixture'\r\nversion = '1.2.3'\r\n"
+            b"requires = ['python-3.7+', 'library-2']\r\n"
+            b"variants = [['platform-windows', 'arch-x86_64']]\r\n"
+            b"tools = ['actual-command']\r\n\r\n"
+            b"def commands():\r\n"
+            b"    env.PATH.prepend('{root}/payload/actual-bin')\r\n"
+            b"    env.FIXTURE_SETTING.set('actual setting')\r\n\r\n"
+            b"raise AssertionError('the builder must never execute this source')\r\n"
+        )
+        self.pin_package(contents)
+        asset = self.build()
+        unpack(asset, self.root / "actual-definition")
+        package = self.root / "actual-definition/fixture/1.2.3"
+        self.assertEqual((package / "package.py").read_bytes(), contents)
+        provenance = json.loads((package / "provenance.json").read_text())
+        self.assertEqual(provenance["package_definition"], self.definition["package"]["definition"])
+        self.assertIn(
+            f"{hashlib.sha256(contents).hexdigest()}  fixture/1.2.3/package.py",
+            (package / "sha256sums.txt").read_text(),
+        )
+
+    def test_package_definition_hash_is_checked_before_payload_extraction(self) -> None:
+        (self.root / "package.py").write_bytes(b"name = 'changed'\n")
+        with (
+            patch("tools.build_bundle._install_payload") as install,
+            self.assertRaisesRegex(BundleError, "package definition checksum mismatch"),
+        ):
+            self.build()
+        install.assert_not_called()
+
+    def test_package_definition_is_mandatory_and_uses_contained_regular_source(self) -> None:
+        specification = self.definition["package"].pop("definition")
+        with self.assertRaisesRegex(BundleError, "validation failed"):
+            self.build()
+        self.definition["package"]["definition"] = specification
+        specification["source"] = "../package.py"
+        with self.assertRaisesRegex(BundleError, "unsafe relative path"):
+            self.build()
+        specification["source"] = "directory"
+        (self.root / "directory").mkdir()
+        with self.assertRaisesRegex(BundleError, "regular file"):
+            self.build()
+        specification["source"] = "package.py"
+        with self.assertRaisesRegex(BundleError, "metadata_directory is required"):
+            _read_package_definition(self.definition, None)
+
+    def test_package_definition_rejects_dynamic_duplicate_and_rebound_identities(self) -> None:
+        base = "name = 'fixture'\nversion = '1.2.3'\n"
+        rebinding = (
+            "version = '1.2.3'\n",
+            "if True:\n    version = '1.2.3'\n",
+            "version += '-other'\n",
+            "import os as version\n",
+            "from os import name\n",
+            "from os import *\n",
+            "def name():\n    pass\n",
+            "class version:\n    pass\n",
+            "try:\n    pass\nexcept Exception as version:\n    pass\n",
+            "match object():\n    case {'value': version}:\n        pass\n",
+            "del version\n",
+            "def helper(value=(version := 'other')):\n    pass\n",
+            "(lambda value=(version := 'other'): value)\n",
+            "def commands():\n    global version\n",
+        )
+        cases = [base + suffix for suffix in rebinding] + [
+            "name = 'fixture'\nversion = str('1.2.3')\n",
+            "name = 'other'\nversion = '1.2.3'\n",
+            "name = 'fixture'\nversion = 123\n",
+            "name = 'fixture'\n",
+            "name = 'fixture'\nversion =\n",
+        ]
+        for contents in cases:
+            with self.subTest(contents=contents):
+                self.pin_package(contents.encode())
+                with self.assertRaisesRegex(BundleError, "package definition"):
+                    _read_package_definition(self.definition, self.root)
+
+    def test_package_definition_allows_local_identity_names_and_keeps_source_unchanged(
+        self,
+    ) -> None:
+        contents = (
+            b"name = 'fixture'\nversion: str = '1.2.3'\n"
+            b"def commands():\n"
+            b"    version = 'local version'\n    name = 'local name'\n"
+            b"    env.FIXTURE_SETTING.set(version)\n"
+            b"class Helper:\n    version = 'class version'\n"
+            b"values = [version for version in ('comprehension local',)]\n"
+        )
+        self.pin_package(contents)
+        self.assertEqual(_read_package_definition(self.definition, self.root), contents)
+
+    def test_supports_zip_tar_zstd_and_7z_with_the_same_contract(self) -> None:
+        for archive_format in ("zip", "tar", "tar.zst", "7z"):
             with self.subTest(archive_format=archive_format):
                 source = self.root / f"source.{archive_format}"
                 if archive_format == "zip":
@@ -200,10 +309,14 @@ class BundleContractTests(unittest.TestCase):
                     with py7zr.SevenZipFile(source, "w") as archive:
                         archive.writestr(b"executable", "bin/fixture.exe")
                 else:
-                    with tarfile.open(source, "w:gz") as archive:
+                    with tarfile.open(
+                        source, "w:gz" if archive_format == "tar" else "w"
+                    ) as archive:
                         member = tarfile.TarInfo("bin/fixture.exe")
                         member.size = 10
                         archive.addfile(member, io.BytesIO(b"executable"))
+                    if archive_format == "tar.zst":
+                        source.write_bytes(zstandard.ZstdCompressor().compress(source.read_bytes()))
                 asset = self.build(
                     recipe(self.root, source, archive_format), source, output=archive_format
                 )
@@ -257,12 +370,20 @@ class BundleContractTests(unittest.TestCase):
                     for item, name in enumerate(names):
                         archive.writestr(b"data", f"entry-{item}")
                         archive.files[item].file_properties()["filename"] = name
-                with (
-                    patch.object(py7zr.SevenZipFile, "extractall") as extract,
-                    self.assertRaises(BundleError),
-                ):
-                    _extract_archive(source, self.root / f"unsafe-output-{index}", "7z")
-                extract.assert_not_called()
+                for decoder in ("py7zr", "native-7zip"):
+                    with (
+                        patch.object(py7zr.SevenZipFile, "extractall") as extract,
+                        patch("tools.build_bundle.subprocess.run") as native,
+                        self.assertRaises(BundleError),
+                    ):
+                        _extract_archive(
+                            source,
+                            self.root / f"unsafe-output-{index}-{decoder}",
+                            "7z",
+                            decoder=decoder,
+                        )
+                    extract.assert_not_called()
+                    native.assert_not_called()
                 self.assertFalse((self.root / "outside").exists())
 
     def test_7z_rejects_links_devices_and_missing_type_metadata_before_extraction(self) -> None:
@@ -283,12 +404,20 @@ class BundleContractTests(unittest.TestCase):
                 with py7zr.SevenZipFile(source, "w") as archive:
                     archive.writestr(b"link target or data", "member")
                     archive.files[0].file_properties()["attributes"] = flags
-                with (
-                    patch.object(py7zr.SevenZipFile, "extractall") as extract,
-                    self.assertRaises(BundleError),
-                ):
-                    _extract_archive(source, self.root / f"special-output-{index}", "7z")
-                extract.assert_not_called()
+                for decoder in ("py7zr", "native-7zip"):
+                    with (
+                        patch.object(py7zr.SevenZipFile, "extractall") as extract,
+                        patch("tools.build_bundle.subprocess.run") as native,
+                        self.assertRaises(BundleError),
+                    ):
+                        _extract_archive(
+                            source,
+                            self.root / f"special-output-{index}-{decoder}",
+                            "7z",
+                            decoder=decoder,
+                        )
+                    extract.assert_not_called()
+                    native.assert_not_called()
 
     def test_7z_rejects_hardlink_and_start_position_metadata(self) -> None:
         for special in ({"hardlink": "target"}, {"is_hardlink": True}, {"startpos": 0}):
@@ -315,6 +444,171 @@ class BundleContractTests(unittest.TestCase):
         open_archive.assert_not_called()
         with self.assertRaisesRegex(BundleError, "safely extract"):
             _extract_archive(self.source, self.root / "malformed-7z", "7z")
+
+    def test_explicit_native_7zip_extracts_regular_resources_with_the_same_contract(self) -> None:
+        source = self.root / "native.7z"
+        empty = self.root / "empty"
+        empty.mkdir()
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"executable", "app/bin/fixture.exe")
+            archive.files[0].file_properties()["attributes"] = 0x8020 | (
+                (stat.S_IFREG | 0o755) << 16
+            )
+            archive.writestr(b"resource", "app/resources/data")
+            archive.write(empty, "app/empty")
+
+        def native(command, **kwargs):
+            if command == ["vx", "7zip", "i"]:
+                return subprocess.CompletedProcess(command, 0, "7-Zip 26.04 (x64) : official", "")
+            self.assertEqual(command[:3], ["vx", "7zip", "x"])
+            self.assertEqual(command[-2:], ["--", str(source.resolve())])
+            for switch in ("-t7z", "-sns-", "-snh-", "-snl-", "-spd", "-spod"):
+                self.assertIn(switch, command)
+            self.assertIs(kwargs["shell"], False)
+            self.assertIs(kwargs["check"], True)
+            self.assertEqual(kwargs["timeout"], 600)
+            destination = Path(kwargs["cwd"])
+            self.assertIn(f"-o{destination.resolve()}", command)
+            (destination / "app/bin").mkdir(parents=True)
+            (destination / "app/bin/fixture.exe").write_bytes(b"executable")
+            (destination / "app/resources").mkdir()
+            (destination / "app/resources/data").write_bytes(b"resource")
+            (destination / "app/empty").mkdir()
+            return subprocess.CompletedProcess(command, 0, "Everything is Ok", "")
+
+        definition = recipe(self.root, source, "7z")
+        definition["targets"][0]["payload"] = {
+            "format": "7z",
+            "decoder": "native-7zip",
+            "mappings": [{"source": "app", "destination": "."}],
+        }
+        with patch("tools.build_bundle.subprocess.run", side_effect=native) as run:
+            asset = self.build(definition, source)
+        self.assertEqual(run.call_count, 2)
+        unpack(asset, self.root / "native-result")
+        payload = self.root / "native-result/fixture/1.2.3/payload"
+        self.assertEqual((payload / "resources/data").read_bytes(), b"resource")
+        self.assertTrue((payload / "empty").is_dir())
+        self.assertEqual(archive_modes(asset)["fixture/1.2.3/payload/bin/fixture.exe"], 0o755)
+
+    def test_native_7zip_rejects_old_or_unidentified_versions_before_extraction(self) -> None:
+        source = self.root / "version.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"data", "member")
+        for index, banner in enumerate(("7-Zip 26.02 (x64)", "p7zip 16.02", "unknown")):
+            with (
+                self.subTest(banner=banner),
+                patch(
+                    "tools.build_bundle.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, banner, ""),
+                ) as run,
+                self.assertRaisesRegex(BundleError, "26.04 or newer"),
+            ):
+                _extract_archive(
+                    source, self.root / f"version-{index}", "7z", decoder="native-7zip"
+                )
+            self.assertEqual(run.call_count, 1)
+
+    def test_native_7zip_nonzero_exit_and_timeout_fail_closed(self) -> None:
+        source = self.root / "failed.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"data", "member")
+        errors = (
+            subprocess.CalledProcessError(2, ["vx", "7zip"], stderr="CRC failed"),
+            subprocess.TimeoutExpired(["vx", "7zip"], 600),
+        )
+        for index, error in enumerate(errors):
+            with (
+                self.subTest(error=type(error).__name__),
+                patch(
+                    "tools.build_bundle.subprocess.run",
+                    side_effect=[
+                        subprocess.CompletedProcess([], 0, "7-Zip (z) 26.04 : official", ""),
+                        error,
+                    ],
+                ),
+                self.assertRaisesRegex(BundleError, "exit code 2|timeout"),
+            ):
+                _extract_archive(source, self.root / f"failed-{index}", "7z", decoder="native-7zip")
+
+    def test_native_7zip_rejects_missing_unexpected_and_wrong_type_results(self) -> None:
+        source = self.root / "tree.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"data", "member")
+        for mode in ("missing", "unexpected", "directory"):
+
+            def native(command, *, result=mode, **kwargs):
+                if command[-1] == "i":
+                    return subprocess.CompletedProcess(command, 0, "7-Zip 26.04 : official", "")
+                destination = Path(kwargs["cwd"])
+                if result == "unexpected":
+                    (destination / "extra").write_bytes(b"unexpected")
+                elif result == "directory":
+                    (destination / "member").mkdir()
+                return subprocess.CompletedProcess(command, 0, "Everything is Ok", "")
+
+            with (
+                self.subTest(mode=mode),
+                patch("tools.build_bundle.subprocess.run", side_effect=native),
+                self.assertRaisesRegex(BundleError, "omitted|unexpected"),
+            ):
+                _extract_archive(source, self.root / f"tree-{mode}", "7z", decoder="native-7zip")
+
+    def test_native_7zip_rejects_extracted_hardlinks(self) -> None:
+        source = self.root / "link.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"data", "member")
+
+        def native(command, **kwargs):
+            if command[-1] == "i":
+                return subprocess.CompletedProcess(command, 0, "7-Zip 26.04 : official", "")
+            os.link(self.source, Path(kwargs["cwd"]) / "member")
+            return subprocess.CompletedProcess(command, 0, "Everything is Ok", "")
+
+        with (
+            patch("tools.build_bundle.subprocess.run", side_effect=native),
+            self.assertRaisesRegex(BundleError, "link or special"),
+        ):
+            _extract_archive(source, self.root / "native-link", "7z", decoder="native-7zip")
+
+    def test_native_tree_uses_real_link_counts_when_directory_cache_reports_zero(self) -> None:
+        destination = self.root / "cached-directory-metadata"
+        destination.mkdir()
+        member = destination / "member"
+        member.write_bytes(b"regular file")
+        cached = SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_nlink=0)
+        entry = SimpleNamespace(path=str(member), stat=Mock(return_value=cached))
+        with patch("tools.build_bundle.os.scandir") as scan:
+            scan.return_value.__enter__.return_value = [entry]
+            _audit_native_tree(destination, [("member", "file", None)])
+            member.unlink()
+            os.link(self.source, member)
+            with self.assertRaisesRegex(BundleError, "link or special"):
+                _audit_native_tree(destination, [("member", "file", None)])
+        entry.stat.assert_not_called()
+
+    def test_py7zr_unsupported_codec_requires_explicit_native_selection(self) -> None:
+        source = self.root / "codec.7z"
+        with py7zr.SevenZipFile(source, "w") as archive:
+            archive.writestr(b"data", "member")
+        with (
+            patch.object(
+                py7zr.SevenZipFile,
+                "archiveinfo",
+                return_value=SimpleNamespace(method_names=["LZMA2", "BCJ2*"]),
+            ),
+            patch.object(py7zr.SevenZipFile, "extractall") as extract,
+            patch("tools.build_bundle.subprocess.run") as native,
+            self.assertRaisesRegex(BundleError, "BCJ2.*explicitly"),
+        ):
+            _extract_archive(source, self.root / "codec-result", "7z")
+        extract.assert_not_called()
+        native.assert_not_called()
+
+    def test_decoder_option_is_only_valid_for_7z_payloads(self) -> None:
+        self.definition["targets"][0]["payload"]["decoder"] = "native-7zip"
+        with self.assertRaisesRegex(BundleError, "validation failed"):
+            self.build()
 
     def test_whole_directory_mapping_preserves_application_resources(self) -> None:
         source = self.root / "application.zip"
@@ -354,8 +648,8 @@ class BundleContractTests(unittest.TestCase):
         with self.assertRaisesRegex(BundleError, "metadata checksum mismatch"):
             self.build()
 
-    def test_rejects_traversal_before_extracting_tar_or_zip(self) -> None:
-        for archive_format in ("zip", "tar"):
+    def test_rejects_traversal_before_extracting_tar_zip_or_tar_zstd(self) -> None:
+        for archive_format in ("zip", "tar", "tar.zst"):
             with self.subTest(archive_format=archive_format):
                 source = self.root / f"escape.{archive_format}"
                 if archive_format == "zip":
@@ -366,11 +660,25 @@ class BundleContractTests(unittest.TestCase):
                         member = tarfile.TarInfo("../outside")
                         member.size = 6
                         archive.addfile(member, io.BytesIO(b"escape"))
+                    if archive_format == "tar.zst":
+                        source.write_bytes(zstandard.ZstdCompressor().compress(source.read_bytes()))
                 with self.assertRaisesRegex(BundleError, "unsafe relative path"):
                     _extract_archive(
                         source, self.root / f"extract-{archive_format}", archive_format
                     )
                 self.assertFalse((self.root / "outside").exists())
+
+    def test_tar_zstd_checks_hash_before_decompression_and_rejects_malformed_frames(self) -> None:
+        definition = recipe(self.root, self.source, "tar.zst")
+        definition["targets"][0]["upstream"]["sha256"] = "0" * 64
+        with (
+            patch("tools.build_bundle._open_tar_archive") as open_archive,
+            self.assertRaisesRegex(BundleError, "checksum mismatch"),
+        ):
+            self.build(definition)
+        open_archive.assert_not_called()
+        with self.assertRaisesRegex(BundleError, "safely extract"):
+            _extract_archive(self.source, self.root / "malformed-zstd", "tar.zst")
 
     def test_rejects_escaping_links_cycles_and_non_directory_parents(self) -> None:
         cases = [
@@ -479,6 +787,28 @@ class BundleContractTests(unittest.TestCase):
         self.assertEqual(asset.read_bytes(), clean.read_bytes())
         self.assertFalse(any(home.exists() for home in observed_homes))
         self.assertFalse(any("created-by-smoke" in name for name in archive_modes(asset)))
+
+    def test_target_smoke_override_uses_its_command_expectation_and_timeout(self) -> None:
+        self.definition["package"]["smoke_test"] = {
+            "command": ["{root}/payload/default-does-not-exist"],
+            "expect": "package default must not run",
+        }
+        self.definition["targets"][0]["smoke_test"] = {
+            "command": ["{root}/payload/bin/fixture{exe}", "--target-version"],
+            "expect": "target override {version}",
+            "timeout_seconds": 123,
+        }
+        with (
+            patch("tools.build_bundle.host_platform.system", return_value="Windows"),
+            patch("tools.build_bundle.host_platform.machine", return_value="AMD64"),
+            patch(
+                "tools.build_bundle.subprocess.run",
+                return_value=subprocess.CompletedProcess([], 0, "target override 1.2.3", ""),
+            ) as run,
+        ):
+            self.build(smoke_test=True)
+        self.assertEqual(run.call_args.args[0][1:], ["--target-version"])
+        self.assertEqual(run.call_args.kwargs["timeout"], 123)
 
     def test_release_index_preserves_the_consumer_v1_contract(self) -> None:
         asset = self.build()

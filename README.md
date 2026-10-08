@@ -30,16 +30,50 @@ and `bundle_schema_version`. The manifest preserves the corresponding package,
 payload, upstream and all-regular-files checksum fields. Repository ownership is
 passed to the index generator; a package release belongs to its runtime repository.
 
-Recipes use the JSON schema in `schema/bundle-definition.schema.json`. They declare
-the package description, Rez tools, PATH entries, native smoke command, pinned
+Recipes use the JSON schema in `schema/bundle-definition.schema.json`. Every recipe
+must pin its checked-in Rez definition, for example
+`"package": {"definition": {"source": "package.py", "sha256": "<raw file SHA-256>"}, ...}`.
+The source path is relative to the recipe directory (or `--metadata-dir`), must
+remain inside it, and must name a regular file. The builder verifies those bytes,
+checks direct literal `name` and `version` declarations against the recipe using
+Python AST, and copies exactly the same bytes into the bundle. It rejects duplicate
+or additional module identity bindings and never executes the package source.
+This is declaration validation, not a sandbox for code executed later by a Rez
+consumer. The actual file owns dependencies, variants, tools and environment
+commands. No package definition is generated as a fallback. Existing recipe
+`description`, `tools` and `path_entries` fields remain descriptive expectations;
+they do not rewrite the copied definition.
+
+Recipes also declare a native smoke command, pinned
 upstream revision/source archive, hashed legal metadata and target assets. Each
-target chooses `binary`, `zip` or `tar` and maps source paths into `payload/`.
+target chooses `binary`, `zip`, `tar`, `tar.zst` or `7z` and maps source paths into `payload/`.
+`tar.zst` is decoded with Zstandard into a private temporary TAR, then uses the
+same complete member preflight and safe extraction as other TAR payloads. This
+works independently of the host Python version's built-in compression support.
 A directory mapping preserves an application's resources and libraries. Safe
 internal links are materialized as regular content so every payload byte is
 hashed and portable caches need no link support. Directory aliases can duplicate
 framework resources. Blender and FreeCAD can use the same builder with their own
 recipes; their payloads and native behavior still require separate validation.
 There are no runtime-specific branches in the builder.
+
+An optional target-level `smoke_test` replaces the package-level smoke command,
+expected output and timeout together. Both use the same schema and enforce native
+platform/architecture plus an executable inside the isolated package copy. This
+lets a portable recipe declare the actual Windows and Unix executable layouts.
+
+7z payloads use py7zr by default. A recipe may explicitly select
+`"payload": {"format": "7z", "decoder": "native-7zip", "mappings": [...]}`
+for methods such as BCJ2 that py7zr cannot decode. This invokes `vx 7zip` with
+separate arguments and requires official 7-Zip 26.04 or newer; the minimum follows
+the vulnerability fixes recorded in the [official release history](https://www.7-zip.org/history.txt).
+The complete py7zr member graph must pass validation before any native invocation.
+Links, junctions, devices, alternate data stream names and portable path collisions
+are rejected. Native extraction has a ten-minute timeout, explicitly disables
+link and alternate stream options, and must produce exactly the preflighted regular
+files and directories, including implicit parent directories. Unexpected entries,
+missing entries, special files and hardlinks fail the build. There is no automatic
+decoder fallback; selecting a decoder does not establish native runtime acceptance.
 
 The builder checks the upstream SHA-256 before extraction, validates the full
 archive member graph, rejects traversal, escaping links, device files and portable

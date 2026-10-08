@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import os
 import platform as host_platform
 import posixpath
+import re
 import shutil
 import stat
 import subprocess
@@ -17,7 +19,8 @@ import unicodedata
 import urllib.parse
 import urllib.request
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
@@ -29,6 +32,7 @@ from py7zr.exceptions import AbsolutePathError, ArchiveError, PasswordRequired
 ROOT = Path(__file__).resolve().parents[1]
 DEFINITION_SCHEMA = ROOT / "schema" / "bundle-definition.schema.json"
 MANIFEST_SCHEMA = ROOT / "schema" / "bundle-manifest.schema.json"
+MINIMUM_NATIVE_7ZIP_VERSION = (26, 4)
 
 
 class BundleError(RuntimeError):
@@ -48,6 +52,7 @@ def validate_definition(definition: dict) -> None:
     triples = [target["triple"] for target in targets]
     if len(triples) != len(set(triples)):
         raise BundleError("bundle definition contains duplicate target triples")
+    _safe_relative(definition["package"]["definition"]["source"])
     for relative in definition["package"]["path_entries"]:
         _safe_relative(relative)
     for metadata in definition["metadata"]:
@@ -73,6 +78,7 @@ def build_bundle(
     """Build one target and its SHA-256 companion; never execute a foreign payload."""
     validate_definition(definition)
     target = _select_target(definition, triple)
+    package_source = _read_package_definition(definition, metadata_directory)
     tool, version = definition["tool"], definition["version"]
     asset_name = f"{tool}-{version}-{triple}.rez.tar.zst"
     output_directory.mkdir(parents=True, exist_ok=True)
@@ -89,11 +95,11 @@ def build_bundle(
         package_root = repository / tool / version
         payload_root = package_root / "payload"
         payload_root.mkdir(parents=True)
+        package_root.joinpath("package.py").write_bytes(package_source)
         executables = _install_payload(source, work / "source", payload_root, target["payload"])
         _install_metadata(definition, metadata_directory, package_root)
         _audit_links(payload_root)
         _materialize_links(payload_root, executables)
-        _write_package_definition(package_root, definition, target)
         _write_system_package(repository, "platform", target["platform"])
         _write_system_package(repository, "arch", target["arch"])
         manifest = _bundle_manifest(definition, target, asset_name)
@@ -105,6 +111,7 @@ def build_bundle(
                 "upstream": definition["provenance"],
                 "payload": target["upstream"],
                 "metadata": definition["metadata"],
+                "package_definition": definition["package"]["definition"],
                 "recipe_sha256": hashlib.sha256(
                     json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest(),
@@ -294,7 +301,125 @@ def _seven_zip_entries(archive: py7zr.SevenZipFile) -> tuple[list[tuple[str, str
     return entries, executables
 
 
-def _extract_archive(source: Path, destination: Path, archive_format: str) -> set[str]:
+def _run_native_7zip(
+    arguments: list[str], destination: Path, timeout: int
+) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["vx", "7zip", *arguments],
+            cwd=destination,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            shell=False,
+            check=True,
+            timeout=timeout,
+        )
+    except subprocess.CalledProcessError as error:
+        detail = (error.stderr or error.stdout or "").strip()[:2000]
+        raise BundleError(
+            f"native 7-Zip failed with exit code {error.returncode}: {detail}"
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise BundleError(f"native 7-Zip exceeded its {timeout}-second timeout") from error
+
+
+def _extract_native_7zip(source: Path, destination: Path) -> None:
+    information = _run_native_7zip(["i"], destination, 60)
+    version = re.search(
+        r"(?m)^7-Zip(?: \([^\r\n)]*\))? (\d+)\.(\d+)(?=\s|$)",
+        information.stdout,
+    )
+    if version is None or tuple(map(int, version.groups())) < MINIMUM_NATIVE_7ZIP_VERSION:
+        raise BundleError("native-7zip requires official 7-Zip 26.04 or newer via vx 7zip")
+    _run_native_7zip(
+        [
+            "x",
+            "-t7z",
+            "-y",
+            "-aoa",
+            "-bd",
+            "-sns-",
+            "-snh-",
+            "-snl-",
+            "-spd",
+            "-spod",
+            f"-o{destination.resolve()}",
+            "--",
+            str(source.resolve()),
+        ],
+        destination,
+        600,
+    )
+
+
+def _audit_native_tree(destination: Path, entries: list[tuple[str, str, None]]) -> None:
+    """Require exactly the preflighted files and directories without following links."""
+    expected = {name: kind for name, kind, _ in entries}
+    for name in list(expected):
+        for parent in PurePosixPath(name).parents:
+            if str(parent) != ".":
+                expected.setdefault(str(parent), "dir")
+    root_information = destination.lstat()
+    if not stat.S_ISDIR(root_information.st_mode) or (
+        getattr(root_information, "st_file_attributes", 0) & (0x0400 | 0x0040)
+    ):
+        raise BundleError("native 7-Zip replaced its extraction directory with a special entry")
+    root = destination.resolve()
+    pending = [destination]
+    found = set()
+    while pending:
+        directory = pending.pop()
+        with os.scandir(directory) as children:
+            for child in children:
+                path = Path(child.path)
+                relative = _safe_relative(path.relative_to(destination).as_posix())
+                # Windows directory metadata can omit link counts; query the actual path.
+                information = path.lstat()
+                mode = information.st_mode
+                if (
+                    getattr(information, "st_file_attributes", 0) & (0x0400 | 0x0040)
+                    or not (stat.S_ISREG(mode) or stat.S_ISDIR(mode))
+                    or (stat.S_ISREG(mode) and information.st_nlink != 1)
+                ):
+                    raise BundleError(f"native 7-Zip emitted a link or special entry: {relative!r}")
+                if not path.resolve().is_relative_to(root):
+                    raise BundleError(f"native 7-Zip emitted an escaping path: {relative!r}")
+                kind = "dir" if stat.S_ISDIR(mode) else "file"
+                if expected.get(relative) != kind:
+                    raise BundleError(f"native 7-Zip emitted an unexpected entry: {relative!r}")
+                found.add(relative)
+                if kind == "dir":
+                    pending.append(path)
+    missing = set(expected) - found
+    if missing:
+        raise BundleError(f"native 7-Zip omitted archive entries: {sorted(missing)[:10]!r}")
+
+
+@contextmanager
+def _open_tar_archive(source: Path, archive_format: str) -> Iterator[tarfile.TarFile]:
+    if archive_format == "tar.zst":
+        with (
+            source.open("rb") as compressed,
+            zstandard.ZstdDecompressor().stream_reader(compressed) as reader,
+            tempfile.TemporaryFile() as decoded,
+        ):
+            shutil.copyfileobj(reader, decoded, length=1024 * 1024)
+            decoded.seek(0)
+            with tarfile.open(fileobj=decoded, mode="r:") as archive:
+                yield archive
+    else:
+        with tarfile.open(source, "r:*") as archive:
+            yield archive
+
+
+def _extract_archive(
+    source: Path, destination: Path, archive_format: str, *, decoder: str = "py7zr"
+) -> set[str]:
+    if decoder not in {"py7zr", "native-7zip"} or (decoder != "py7zr" and archive_format != "7z"):
+        raise BundleError("native-7zip is only an explicit decoder for 7z payloads")
     destination.mkdir()
     executables = set()
     try:
@@ -329,10 +454,24 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> se
             with py7zr.SevenZipFile(source, mode="r") as archive:
                 if archive.needs_password():
                     raise BundleError("encrypted 7z payloads are unsupported")
-                _, executables = _seven_zip_entries(archive)
-                archive.extractall(path=destination)
+                entries, executables = _seven_zip_entries(archive)
+                if decoder == "py7zr":
+                    unsupported = [
+                        method.rstrip("*")
+                        for method in archive.archiveinfo().method_names
+                        if method.endswith("*")
+                    ]
+                    if unsupported:
+                        raise BundleError(
+                            f"py7zr does not support 7z methods {unsupported!r}; "
+                            "explicitly set payload.decoder to 'native-7zip'"
+                        )
+                    archive.extractall(path=destination)
+            if decoder == "native-7zip":
+                _extract_native_7zip(source, destination)
+                _audit_native_tree(destination, entries)
         else:
-            with tarfile.open(source, "r:*") as archive:
+            with _open_tar_archive(source, archive_format) as archive:
                 members = archive.getmembers()
                 entries = []
                 for member in members:
@@ -365,6 +504,7 @@ def _extract_archive(source: Path, destination: Path, archive_format: str) -> se
     except (
         tarfile.TarError,
         zipfile.BadZipFile,
+        zstandard.ZstdError,
         ArchiveError,
         AbsolutePathError,
         PasswordRequired,
@@ -386,7 +526,12 @@ def _install_payload(source: Path, extracted: Path, payload: Path, specification
         shutil.copyfile(source, destination)
         destination.chmod(0o755 if mapping.get("executable", False) else 0o644)
         return {mapping["destination"]} if mapping.get("executable", False) else set()
-    source_executables = _extract_archive(source, extracted, specification["format"])
+    source_executables = _extract_archive(
+        source,
+        extracted,
+        specification["format"],
+        decoder=specification.get("decoder", "py7zr"),
+    )
 
     def copy_with_mode(entry: Path, destination: Path) -> None:
         _copy_entry(entry, destination)
@@ -512,23 +657,97 @@ def _install_metadata(definition: dict, directory: Path | None, package_root: Pa
         destination.chmod(0o644)
 
 
-def _write_package_definition(package_root: Path, definition: dict, target: dict) -> None:
-    package = definition["package"]
-    lines = [
-        f"name = {definition['tool']!r}",
-        f"version = {definition['version']!r}",
-        f"description = {package['description']!r}",
-        f"tools = {package['tools']!r}",
-        f"requires = {['platform-' + target['platform'], 'arch-' + target['arch']]!r}",
-        "",
-        "def commands():",
-    ]
-    lines.extend(
-        f"    env.PATH.prepend({('{root}/' + path)!r})" for path in package["path_entries"]
-    )
-    package_root.joinpath("package.py").write_text(
-        "\n".join(lines) + "\n", encoding="utf-8", newline="\n"
-    )
+def _module_identity_bindings(node: ast.AST) -> Iterable[tuple[str, ast.AST]]:
+    """Find identity bindings in module scope, including outer scope expressions."""
+    name = None
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        name = node.id
+    elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        name = node.name
+    elif isinstance(node, ast.alias):
+        if node.name == "*":
+            raise BundleError("package definition cannot use module wildcard imports")
+        name = node.asname or node.name.split(".")[0]
+    elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)):
+        name = node.name
+    elif isinstance(node, ast.MatchMapping):
+        name = node.rest
+    if name in {"name", "version"}:
+        yield name, node
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        children = [node.args, *node.decorator_list]
+        if node.returns is not None:
+            children.append(node.returns)
+    elif isinstance(node, ast.ClassDef):
+        children = [*node.bases, *node.keywords, *node.decorator_list]
+    elif isinstance(node, ast.Lambda):
+        children = [node.args]
+    elif isinstance(node, ast.comprehension):
+        children = [node.iter, *node.ifs]
+    else:
+        children = ast.iter_child_nodes(node)
+    for child in children:
+        yield from _module_identity_bindings(child)
+
+
+def _read_package_definition(definition: dict, directory: Path | None) -> bytes:
+    """Validate pinned declarations without executing the actual Rez definition."""
+    if directory is None:
+        raise BundleError("metadata_directory is required for the pinned package definition")
+    specification = definition["package"]["definition"]
+    source = directory / specification["source"]
+    try:
+        source.resolve(strict=True).relative_to(directory.resolve())
+        if source.is_symlink() or not source.is_file():
+            raise BundleError("package definition source must be a regular file")
+        contents = source.read_bytes()
+    except (OSError, ValueError) as error:
+        raise BundleError(
+            "package definition source must remain inside the recipe directory"
+        ) from error
+    actual = hashlib.sha256(contents).hexdigest()
+    if actual != specification["sha256"]:
+        raise BundleError(
+            "package definition checksum mismatch: "
+            f"expected {specification['sha256']}, got {actual}"
+        )
+    try:
+        module = ast.parse(contents, filename=specification["source"])
+    except (SyntaxError, ValueError) as error:
+        raise BundleError(f"package definition contains invalid Python syntax: {error}") from error
+    expected = {"name": definition["tool"], "version": definition["version"]}
+    declarations = {}
+    for statement in module.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign):
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id in expected:
+            if (
+                target.id in declarations
+                or not isinstance(value, ast.Constant)
+                or type(value.value) is not str
+                or value.value != expected[target.id]
+            ):
+                raise BundleError(
+                    f"package definition {target.id} must be one matching literal string"
+                )
+            declarations[target.id] = target
+    if set(declarations) != set(expected):
+        raise BundleError(
+            "package definition requires direct literal name and version declarations"
+        )
+    for name, node in _module_identity_bindings(module):
+        if node is not declarations[name]:
+            raise BundleError(f"package definition has another module binding for {name}")
+    if any(
+        isinstance(node, ast.Global) and set(node.names) & set(expected)
+        for node in ast.walk(module)
+    ):
+        raise BundleError("package definition cannot globally rebind name or version")
+    return contents
 
 
 def _write_system_package(repository: Path, family: str, version: str) -> None:
@@ -615,7 +834,7 @@ def _smoke_test(package_root: Path, definition: dict, target: dict) -> None:
         "version": definition["version"],
         "exe": ".exe" if target["platform"] == "windows" else "",
     }
-    smoke = definition["package"]["smoke_test"]
+    smoke = target.get("smoke_test", definition["package"]["smoke_test"])
     command = [argument.format_map(substitutions) for argument in smoke["command"]]
     executable = Path(command[0])
     try:
