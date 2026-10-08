@@ -296,12 +296,16 @@ def recompute_index(bundles: list) -> dict:
 
 
 def regenerate_index(repo_root: Path) -> Path:
-    """Rewrite ``index.json`` from the bundle tree on disk."""
+    """Rewrite ``index.json`` from the bundle tree on disk.
+
+    The index carries no timestamp: it is derived data, so a rebuild of an
+    unchanged tree must be byte-identical. Without that, the CI drift check
+    would flag a difference on every run. Git history records when it changed.
+    """
     payload = recompute_index(discover_bundles(repo_root))
 
     index = {
         "spec_version": SPEC_VERSION,
-        "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "platforms": payload["platforms"],
         "packages": payload["packages"],
     }

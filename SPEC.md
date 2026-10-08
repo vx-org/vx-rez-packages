@@ -200,7 +200,6 @@ criterion 1: *providers can discover versions from release/index metadata.*
 ```json
 {
   "spec_version": "1.0.0-draft",
-  "updated_at": "2026-10-08T00:00:00Z",
   "platforms": ["windows-x86_64"],
   "packages": [
     {
@@ -216,7 +215,6 @@ criterion 1: *providers can discover versions from release/index metadata.*
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `spec_version` | string | yes | Spec version, as in §4.1. |
-| `updated_at` | string | yes | RFC 3339 UTC timestamp of the last regeneration. |
 | `platforms` | array | yes | Union of all platforms published by this repository. A provider uses this to report an unsupported platform clearly (vx#861 criterion 3) rather than failing with a missing-file error. |
 | `packages[]` | array | yes | One entry per package name. |
 | `packages[].name` | string | yes | Rez package name. |
@@ -225,7 +223,9 @@ criterion 1: *providers can discover versions from release/index metadata.*
 | `packages[].bundle` | string | yes | Repo-relative path to the newest version's `bundle.json`. |
 
 The index is **derived data**: `scripts/validate_repo.py` recomputes it from the bundle tree on
-every CI run and fails if the committed file differs. Nobody edits it by hand.
+every CI run and fails if the committed file differs. Nobody edits it by hand. It carries no
+timestamp, so a rebuild of an unchanged tree is byte-identical and the drift check stays
+meaningful; git history records when it last changed.
 
 ### Mapping vx platform/arch to asset names (vx#861 criterion 2)
 

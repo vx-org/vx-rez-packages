@@ -171,6 +171,22 @@ class ValidateRepoTests(unittest.TestCase):
         )
         self.assertTrue(any("sha256" in err for err in errors))
 
+    def test_index_is_reproducible(self) -> None:
+        """Rebuilding the index twice must produce identical bytes.
+
+        The CI drift check compares the committed index against a freshly
+        generated one, so any volatile field (a timestamp, for example) would
+        make that check fail on every run and stop catching real drift.
+        """
+        self.build_sample()
+        first = (self.tmp / "index.json").read_bytes()
+
+        make_bundle.regenerate_index(self.tmp)
+        second = (self.tmp / "index.json").read_bytes()
+
+        self.assertEqual(first, second)
+        self.assertNotIn(b"updated_at", first)
+
     def test_detects_stale_index(self) -> None:
         self.build_sample()
         index_file = self.tmp / "index.json"
