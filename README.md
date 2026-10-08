@@ -1,5 +1,10 @@
 # vx-rez-packages
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/vx-org/.github/main/profile/assets/vx-symbol-dark.svg">
+  <img src="https://raw.githubusercontent.com/vx-org/.github/main/profile/assets/vx-symbol-light.svg" width="48" alt="VX symbol">
+</picture>
+
 One shared builder and schema-v1 release contract for real VX runtime Rez packages.
 Runtime recipes live in their own repositories, starting with
 [vx-org/witr](https://github.com/vx-org/witr). This repository does not publish
