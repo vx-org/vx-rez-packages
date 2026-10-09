@@ -109,8 +109,17 @@ targets without publishing. Tag releases publish only after all native jobs and
 index validation pass and the tag matches `<tool>-<version>`. Publication creates
 a draft, downloads every uploaded asset and compares its names and SHA-256 with
 the validated local release before making the draft public. The workflow then
-reads back public release metadata and checksum companions; installed VX
+reads back public release metadata and checksum companions, then downloads and
+verifies every public asset again; installed VX
 acceptance remains a separate consumer gate.
+
+Optional `release_assets` entries pin original runtime archives and corresponding
+source archives by flat asset name, HTTPS URL, SHA-256 and exact byte size. The
+workflow retains those bytes alongside the bundles and writes
+`release-assets.json` with checksum companions. Local reuse accepts the same pins
+and avoids a second download. Conflicting assets fail without overwriting them.
+These records preserve the recipe's digest origin; retaining an archive does not
+turn a locally computed first-intake hash into an upstream signature.
 
 The verification harness provisions a repository from an independently pinned
 index and checks the selected archive plus every regular repository file. From
@@ -124,3 +133,7 @@ vx uv run --locked python -m tools.cache_bundle --index-url "$INDEX_URL" --index
 The second command re-verifies cached content without network access and returns
 the repository directory for an SDK consumer. This harness owns no solver or
 environment semantics and is separate from installed VX acceptance.
+
+A [catalog](docs/catalog.md) can pin release indices across runtime repositories.
+It adds a verified catalog-to-index download chain and exact tool/version lookup;
+dependency resolution and environment interpretation remain in Rez Next.
