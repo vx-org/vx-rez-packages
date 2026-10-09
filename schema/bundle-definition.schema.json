@@ -49,6 +49,19 @@
         "properties": {"source": {"type": "string", "minLength": 1}, "destination": {"type": "string", "minLength": 1}, "sha256": {"$ref": "#/$defs/sha256"}}
       }
     },
+    "release_assets": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["name", "url", "sha256", "size"],
+        "properties": {
+          "name": {"type": "string", "minLength": 1, "pattern": "^[^/\\\\]+$"},
+          "url": {"$ref": "#/$defs/https"},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "size": {"type": "integer", "minimum": 1}
+        }
+      }
+    },
     "targets": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/target"}},
     "unsupported_targets": {
       "type": "array",

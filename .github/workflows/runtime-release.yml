@@ -150,6 +150,11 @@ jobs:
         run: |
           tag=$(vx uv run --locked python -c 'import json,os; d=json.load(open(os.environ["RECIPE"])); print(d["tool"]+"-"+d["version"])')
           vx uv run --locked python -m tools.generate_index --definition "$RECIPE" --asset-dir ../dist --repository "$RELEASE_REPOSITORY" --release-tag "$tag" --output ../dist/index.json
+      - name: Retain pinned originals and corresponding sources
+        working-directory: tooling
+        env:
+          RECIPE: ../recipe/${{ inputs.definition }}
+        run: vx uv run --locked python -m tools.retain_release_assets --definition "$RECIPE" --output-dir ../dist
       - uses: actions/upload-artifact@v7
         with:
           name: release
@@ -218,3 +223,13 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           RECIPE: ../recipe/${{ inputs.definition }}
         run: vx uv run --locked python -m tools.generate_index --definition "$RECIPE" --github-release-tag "$RELEASE_TAG" --repository "$RELEASE_REPOSITORY" --output ../readback/index.json
+      - name: Read back and verify every public runtime and source asset
+        shell: bash
+        working-directory: tooling
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          vx gh release download "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" --dir public-readback
+          vx uv run --locked python -m tools.verify_release --expected-dir ../dist --downloaded-dir public-readback
