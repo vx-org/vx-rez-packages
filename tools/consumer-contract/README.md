@@ -31,6 +31,11 @@ including `PATH`. Values support the smoke command's `{root}`, `{version}` and
 validated separately by their exact names and request/repository bindings. Other
 parent variables fail; diagnostics print unexpected names without values.
 
+On Windows, launches also receive the validated native `SystemRoot` required by
+the operating system loader. This launch-only bootstrap is separate from the
+exact empty-parent package activation and its delta; other parent variables are
+not inherited. A package cannot replace the native loader root.
+
 For native CI before publication, verify and extract the real built bundle with:
 
 ```bash
