@@ -52,6 +52,6 @@ jobs:
           components: rustfmt, clippy
       - name: Install checked Rust components in the VX environment
         run: vx rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
-      - run: vx cargo +1.95.0 fmt --manifest-path tools/consumer-contract/Cargo.toml --check
-      - run: vx cargo +1.95.0 clippy --manifest-path tools/consumer-contract/Cargo.toml --locked --all-targets -- -D warnings
-      - run: vx cargo +1.95.0 test --manifest-path tools/consumer-contract/Cargo.toml --locked
+      - run: vx rustup run 1.95.0 cargo fmt --manifest-path tools/consumer-contract/Cargo.toml --check
+      - run: vx rustup run 1.95.0 cargo clippy --manifest-path tools/consumer-contract/Cargo.toml --locked --all-targets -- -D warnings
+      - run: vx rustup run 1.95.0 cargo test --manifest-path tools/consumer-contract/Cargo.toml --locked

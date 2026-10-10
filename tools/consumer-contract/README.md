@@ -9,8 +9,8 @@ published, then generate and commit its Cargo lockfile before native CI uses
 From the shared tooling repository, build and test with:
 
 ```bash
-vx cargo +1.95.0 test --manifest-path tools/consumer-contract/Cargo.toml --locked
-vx cargo +1.95.0 build --manifest-path tools/consumer-contract/Cargo.toml --locked
+vx rustup run 1.95.0 cargo test --manifest-path tools/consumer-contract/Cargo.toml --locked
+vx rustup run 1.95.0 cargo build --manifest-path tools/consumer-contract/Cargo.toml --locked
 ```
 
 The Python harness validates the declared native platform and hardware architecture,

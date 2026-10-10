@@ -36,7 +36,11 @@ fn fixture() -> Fixture {
         tool: "fixture".to_string(),
         version: "1.2.3".to_string(),
         platform: platform.to_string(),
-        arch: "x86_64".to_string(),
+        arch: match std::env::consts::ARCH {
+            "aarch64" => "arm_64",
+            arch => arch,
+        }
+        .to_string(),
         expected_root: root.clone(),
         payload_root: payload,
         executable: executable.clone(),
