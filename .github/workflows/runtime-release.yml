@@ -21,6 +21,9 @@ on:
 permissions:
   contents: read
 
+env:
+  REZ_SDK_VERSION: "0.3.10"
+
 jobs:
   matrix:
     runs-on: ubuntu-24.04
@@ -39,7 +42,7 @@ jobs:
           repository: vx-org/vx-rez-packages
           ref: ${{ inputs.tooling-ref }}
           path: tooling
-      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+      - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
         with:
           tools: uv
           cache: "true"
@@ -58,7 +61,7 @@ jobs:
     name: Native ${{ matrix.target.triple }}
     needs: matrix
     runs-on: ${{ matrix.target.runner }}
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -72,49 +75,36 @@ jobs:
           repository: vx-org/vx-rez-packages
           ref: ${{ inputs.tooling-ref }}
           path: tooling
-      - uses: actions/setup-python@v7
-        id: python
+      - uses: ./tooling/.github/actions/native-environment
+        id: native
         with:
-          python-version: "3.12"
-          architecture: ${{ matrix.target.arch == 'arm_64' && 'arm64' || 'x64' }}
-      - name: Bootstrap verified x64 VX on Windows ARM
-        if: runner.os == 'Windows' && runner.arch == 'ARM64'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $archive = Join-Path $env:RUNNER_TEMP 'vx-0.9.35-x64.zip'
-          Invoke-WebRequest 'https://github.com/loonghao/vx/releases/download/v0.9.35/vx-0.9.35-x86_64-pc-windows-msvc.zip' -OutFile $archive
-          $expected = '514d1f69141ba334c7338ce97673f01c037162e1c6d71848d0d727d8bb40f621'
-          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'VX bootstrap checksum mismatch' }
-          $install = Join-Path $env:RUNNER_TEMP 'vx-bootstrap'
-          Expand-Archive -LiteralPath $archive -DestinationPath $install
-          $binary = Get-ChildItem -LiteralPath $install -Recurse -Filter vx.exe | Select-Object -First 1
-          if (-not $binary) { throw 'VX bootstrap executable missing' }
-          $binary.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          & $binary.FullName --version
-          if ($LASTEXITCODE -ne 0) { throw 'VX bootstrap execution failed' }
-      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
-        if: runner.os != 'Windows' || runner.arch != 'ARM64'
-        with:
-          tools: uv
-          cache: "true"
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - run: vx uv sync --locked --python "$PYTHON_PATH"
-        shell: bash
-        env:
-          PYTHON_PATH: ${{ steps.python.outputs.python-path }}
-        working-directory: tooling
+          architecture: ${{ matrix.target.arch }}
+          sdk-version: ${{ env.REZ_SDK_VERSION }}
       - name: Verify upstream, build Rez package and execute native smoke
         shell: bash
         working-directory: tooling
         env:
           RECIPE: ../recipe/${{ inputs.definition }}
           TRIPLE: ${{ matrix.target.triple }}
-        run: vx uv run --locked python -m tools.build_bundle --definition "$RECIPE" --triple "$TRIPLE" --output-dir ../dist
+          SDK_EXECUTABLE: ${{ steps.native.outputs.sdk-executable }}
+        run: vx uv run --locked python -m tools.build_bundle --definition "$RECIPE" --triple "$TRIPLE" --sdk-executable "$SDK_EXECUTABLE" --output-dir ../dist
+      - name: Prove public adapter activation against the actual built bundle
+        shell: bash
+        working-directory: tooling
+        env:
+          RECIPE: ../recipe/${{ inputs.definition }}
+          TRIPLE: ${{ matrix.target.triple }}
+          CONSUMER_EXECUTABLE: ${{ steps.native.outputs.consumer-executable }}
+        run: vx uv run --locked python -m tools.verify_consumer --definition "$RECIPE" --triple "$TRIPLE" --bundle-dir ../dist --consumer-executable "$CONSUMER_EXECUTABLE" --expected-sdk-version "$REZ_SDK_VERSION" --output ../receipts/native.json
       - uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.target.triple }}
           path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: native-consumer-${{ matrix.target.triple }}
+          path: receipts/native.json
           if-no-files-found: error
 
   index:
@@ -134,7 +124,7 @@ jobs:
           pattern: bundle-*
           merge-multiple: true
           path: dist
-      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+      - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
         with:
           tools: uv
           cache: "true"
@@ -148,7 +138,7 @@ jobs:
           RECIPE: ../recipe/${{ inputs.definition }}
           RELEASE_REPOSITORY: ${{ github.repository }}
         run: |
-          tag=$(vx uv run --locked python -c 'import json,os; d=json.load(open(os.environ["RECIPE"])); print(d["tool"]+"-"+d["version"])')
+          tag=$(vx uv run --locked python -m tools.release_tag --definition "$RECIPE")
           vx uv run --locked python -m tools.generate_index --definition "$RECIPE" --asset-dir ../dist --repository "$RELEASE_REPOSITORY" --release-tag "$tag" --output ../dist/index.json
       - name: Retain pinned originals and corresponding sources
         working-directory: tooling
@@ -159,6 +149,11 @@ jobs:
         with:
           name: release
           path: dist/*
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v7
+        with:
+          name: trusted-release-index
+          path: dist/index.json*
           if-no-files-found: error
 
   publish:
@@ -180,7 +175,7 @@ jobs:
         with:
           name: release
           path: dist
-      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+      - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
         with:
           tools: uv gh
           cache: "true"
@@ -189,14 +184,15 @@ jobs:
         working-directory: tooling
       - name: Create draft release after matching its source tag
         shell: bash
+        working-directory: tooling
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_REPOSITORY: ${{ github.repository }}
           RELEASE_REF: ${{ github.ref_name }}
+          RECIPE: ../recipe/${{ inputs.definition }}
         run: |
-          tag=$(vx uv run --project tooling --locked python -c 'import json; print(json.load(open("dist/index.json"))["release_tag"])')
-          test "$RELEASE_REF" = "$tag"
-          vx gh release create "$tag" dist/* --draft --repo "$RELEASE_REPOSITORY" --verify-tag --title "$tag" --notes "Native runtime Rez packages, index and SHA-256 companions. Upstream provenance and legal notices are included in every bundle."
+          tag=$(vx uv run --locked python -m tools.release_tag --definition "$RECIPE" --check "$RELEASE_REF")
+          vx gh release create "$tag" ../dist/* --draft --repo "$RELEASE_REPOSITORY" --verify-tag --title "$tag" --notes "Native runtime Rez packages, index and SHA-256 companions. Upstream provenance and legal notices are included in every bundle."
       - name: Download and verify every uploaded draft asset
         shell: bash
         env:
@@ -233,3 +229,49 @@ jobs:
         run: |
           vx gh release download "$RELEASE_TAG" --repo "$RELEASE_REPOSITORY" --dir public-readback
           vx uv run --locked python -m tools.verify_release --expected-dir ../dist --downloaded-dir public-readback
+
+  public-consumer:
+    name: Public acquisition ${{ matrix.target.triple }}
+    if: inputs.publish && needs.publish.result == 'success'
+    needs: [matrix, publish]
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.matrix.outputs.targets) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: recipe
+      - uses: actions/checkout@v7
+        with:
+          repository: vx-org/vx-rez-packages
+          ref: ${{ inputs.tooling-ref }}
+          path: tooling
+      - uses: actions/download-artifact@v8
+        with:
+          name: trusted-release-index
+          path: trusted-release
+      - uses: ./tooling/.github/actions/native-environment
+        id: native
+        with:
+          architecture: ${{ matrix.target.arch }}
+          sdk-version: ${{ env.REZ_SDK_VERSION }}
+      - name: Acquire public bundles, activate natively and repeat from the offline cache
+        shell: bash
+        working-directory: tooling
+        env:
+          RECIPE: ../recipe/${{ inputs.definition }}
+          TRIPLE: ${{ matrix.target.triple }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          CONSUMER_EXECUTABLE: ${{ steps.native.outputs.consumer-executable }}
+        run: |
+          tag=$(vx uv run --locked python -m tools.release_tag --definition "$RECIPE")
+          index_url="https://github.com/$RELEASE_REPOSITORY/releases/download/$tag/index.json"
+          vx uv run --locked python -m tools.verify_consumer --definition "$RECIPE" --triple "$TRIPLE" --index-url "$index_url" --trusted-index ../trusted-release/index.json --cache "$RUNNER_TEMP/public-consumer-cache" --require-empty-cache --consumer-executable "$CONSUMER_EXECUTABLE" --expected-sdk-version "$REZ_SDK_VERSION" --output ../receipts/public.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: public-consumer-${{ matrix.target.triple }}
+          path: receipts/public.json
+          if-no-files-found: error

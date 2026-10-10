@@ -27,7 +27,7 @@
     "triple": { "type": "string", "minLength": 1 },
     "asset_name": { "type": "string", "pattern": "^[^/]+\\.rez\\.tar\\.zst$" },
     "package_root": { "type": "string", "pattern": "^[^/]+/[^/]+$" },
-    "payload_root": { "type": "string", "pattern": "^[^/]+/[^/]+/payload$" },
+    "payload_root": { "type": "string", "pattern": "^[^/]+/[^/]+/(?:[^/]+/)*payload$" },
     "upstream": {
       "type": "object",
       "additionalProperties": false,

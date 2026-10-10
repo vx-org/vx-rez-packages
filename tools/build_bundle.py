@@ -47,6 +47,7 @@ def load_definition(path: Path) -> dict:
 
 
 def validate_definition(definition: dict) -> None:
+    _build_revision(definition)
     _validate_json(definition, DEFINITION_SCHEMA)
     targets = definition["targets"] + definition["unsupported_targets"]
     triples = [target["triple"] for target in targets]
@@ -66,6 +67,22 @@ def validate_definition(definition: dict) -> None:
             _safe_relative(mapping["destination"], allow_root=True)
 
 
+def _build_revision(definition: dict) -> int:
+    if "build_revision" not in definition:
+        return 0
+    revision = definition["build_revision"]
+    if type(revision) is not int or revision <= 0:
+        raise BundleError("build_revision must be a positive integer when supplied")
+    return revision
+
+
+def expected_release_tag(definition: dict) -> str:
+    """Identify immutable packaging revisions without changing the runtime version."""
+    base = f"{definition['tool']}-{definition['version']}"
+    revision = _build_revision(definition)
+    return f"{base}-r{revision}" if revision else base
+
+
 def build_bundle(
     definition: dict,
     triple: str,
@@ -73,6 +90,8 @@ def build_bundle(
     *,
     source_archive: Path | None = None,
     metadata_directory: Path | None = None,
+    sdk_executable: Path | None = None,
+    repositories: Iterable[Path] = (),
     smoke_test: bool = True,
 ) -> Path:
     """Build one target and its SHA-256 companion; never execute a foreign payload."""
@@ -85,24 +104,32 @@ def build_bundle(
     output_path = output_directory / asset_name
     with tempfile.TemporaryDirectory(prefix="vx-rez-bundle-") as temporary:
         work = Path(temporary).resolve()
+        pinned_definition = work / "package.py"
+        pinned_definition.write_bytes(package_source)
+        plan = _installation_plan(
+            pinned_definition, definition, target, sdk_executable, repositories
+        )
+        repository = work / "repository"
+        repository.mkdir()
+        package_root = _planned_directory(repository, plan["package_relative_path"])
+        package_root.mkdir(parents=True)
+        package_root.joinpath("package.py").write_bytes(package_source)
+        variant_root = _planned_directory(repository, plan["variant_relative_path"])
+        payload_root = _planned_directory(repository, plan["variant_relative_path"] + "/payload")
+        payload_root.mkdir(parents=True)
         source = source_archive
         if source is None:
             source = work / "upstream-payload"
             _download(target["upstream"]["url"], source)
         source = source.resolve()
         _verify_sha256(source, target["upstream"]["sha256"], "upstream payload")
-        repository = work / "repository"
-        package_root = repository / tool / version
-        payload_root = package_root / "payload"
-        payload_root.mkdir(parents=True)
-        package_root.joinpath("package.py").write_bytes(package_source)
         executables = _install_payload(source, work / "source", payload_root, target["payload"])
-        _install_metadata(definition, metadata_directory, package_root)
+        _install_metadata(definition, metadata_directory, package_root, payload_root)
         _audit_links(payload_root)
         _materialize_links(payload_root, executables)
         _write_system_package(repository, "platform", target["platform"])
         _write_system_package(repository, "arch", target["arch"])
-        manifest = _bundle_manifest(definition, target, asset_name)
+        manifest = _bundle_manifest(definition, target, asset_name, plan)
         _validate_json(manifest, MANIFEST_SCHEMA)
         _write_json(package_root / "manifest.json", manifest)
         _write_json(
@@ -112,6 +139,9 @@ def build_bundle(
                 "payload": target["upstream"],
                 "metadata": definition["metadata"],
                 "package_definition": definition["package"]["definition"],
+                "installation_plan": plan,
+                "build_revision": _build_revision(definition),
+                "release_tag": expected_release_tag(definition),
                 "recipe_sha256": hashlib.sha256(
                     json.dumps(definition, sort_keys=True, separators=(",", ":")).encode()
                 ).hexdigest(),
@@ -123,17 +153,149 @@ def build_bundle(
             _assert_native_target(target)
             smoke_root = work / "smoke" / tool / version
             shutil.copytree(package_root, smoke_root)
-            _smoke_test(smoke_root, definition, target)
+            smoke_variant = smoke_root / variant_root.relative_to(package_root)
+            _smoke_test(smoke_variant, definition, target)
         _write_reproducible_tar_zstd(
             repository,
             output_path,
             definition["release_date"],
-            executable_paths={f"{tool}/{version}/payload/{path}" for path in executables},
+            executable_paths={
+                f"{plan['variant_relative_path']}/payload/{path}" for path in executables
+            },
         )
     output_path.with_name(f"{asset_name}.sha256").write_text(
         f"{_sha256(output_path)}  {asset_name}\n", encoding="utf-8", newline="\n"
     )
     return output_path
+
+
+def _installation_plan(
+    package: Path,
+    definition: dict,
+    target: dict,
+    sdk_executable: Path | None,
+    repositories: Iterable[Path],
+) -> dict:
+    """Ask the explicit SDK for Core's layout; never infer variant semantics here."""
+    if sdk_executable is None:
+        configured = os.environ.get("VX_REZ_SDK_EXECUTABLE")
+        sdk_executable = Path(configured) if configured else None
+    if sdk_executable is None:
+        raise BundleError("--sdk-executable or VX_REZ_SDK_EXECUTABLE is required")
+    try:
+        executable = sdk_executable.resolve(strict=True)
+        if not executable.is_file():
+            raise BundleError("SDK executable must be a regular file")
+        command = [
+            str(executable),
+            "installation-plan",
+            "--definition",
+            str(package),
+            "--platform",
+            target["platform"],
+            "--arch",
+            target["arch"],
+            "--json",
+        ]
+        for repository in repositories:
+            dependency = repository.resolve(strict=True)
+            if not dependency.is_dir():
+                raise BundleError("SDK dependency repository must be a directory")
+            command.extend(["--repository", str(dependency)])
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=60,
+            cwd=package.parent,
+            stdin=subprocess.DEVNULL,
+            shell=False,
+        )
+    except (OSError, UnicodeError, subprocess.SubprocessError) as error:
+        raise BundleError(f"SDK installation planning failed: {error}") from error
+
+    def unique_keys(pairs: list[tuple[str, object]]) -> dict:
+        document = {}
+        for key, value in pairs:
+            if key in document:
+                raise BundleError(f"duplicate SDK installation plan key: {key}")
+            document[key] = value
+        return document
+
+    try:
+        if len(result.stdout) > 1024 * 1024:
+            raise BundleError("SDK installation plan is too large")
+        plan = json.loads(result.stdout, object_pairs_hook=unique_keys)
+    except (TypeError, ValueError) as error:
+        raise BundleError("SDK installation plan must be valid JSON") from error
+    fields = {
+        "schema_version",
+        "name",
+        "version",
+        "platform",
+        "arch",
+        "variant_index",
+        "variant_requirements",
+        "package_relative_path",
+        "variant_relative_path",
+    }
+    if not isinstance(plan, dict) or set(plan) != fields:
+        raise BundleError("SDK installation plan has unexpected fields")
+    if type(plan["schema_version"]) is not int or plan["schema_version"] != 1:
+        raise BundleError("unsupported SDK installation plan schema")
+    for key, expected in (
+        ("name", definition["tool"]),
+        ("version", definition["version"]),
+        ("platform", target["platform"]),
+        ("arch", target["arch"]),
+    ):
+        if plan[key] != expected:
+            raise BundleError(f"SDK installation plan does not match requested {key}")
+    index, requirements = plan["variant_index"], plan["variant_requirements"]
+    if (index is not None and (type(index) is not int or index < 0)) or not (
+        isinstance(requirements, list)
+        and all(isinstance(requirement, str) and requirement for requirement in requirements)
+    ):
+        raise BundleError("SDK installation plan has invalid variant metadata")
+    expected_package = f"{definition['tool']}/{definition['version']}"
+    package_path, variant_path = plan["package_relative_path"], plan["variant_relative_path"]
+    for path in (package_path, variant_path):
+        if not isinstance(path, str) or _safe_relative(path) != path:
+            raise BundleError("SDK installation plan paths must be canonical relative paths")
+    if package_path != expected_package or not (
+        variant_path == package_path or variant_path.startswith(package_path + "/")
+    ):
+        raise BundleError("SDK installation plan leaves the requested package root")
+    if index is None and (requirements or variant_path != package_path):
+        raise BundleError("SDK installation plan has inconsistent unvarianted layout")
+    suffix = PurePosixPath(variant_path).relative_to(PurePosixPath(package_path))
+    if suffix.parts and suffix.parts[0].casefold() in {
+        "package.py",
+        "manifest.json",
+        "provenance.json",
+        "sha256sums.txt",
+    }:
+        raise BundleError("SDK installation path collides with package metadata")
+    return plan
+
+
+def _planned_directory(repository: Path, relative: str) -> Path:
+    """Reject links and non-directories at every existing layout component."""
+    path = repository
+    for component in PurePosixPath(_safe_relative(relative)).parts:
+        path /= component
+        if path.exists() or path.is_symlink():
+            information = path.lstat()
+            if not stat.S_ISDIR(information.st_mode) or (
+                getattr(information, "st_file_attributes", 0) & (0x0400 | 0x0040)
+            ):
+                raise BundleError("SDK installation path contains a link or non-directory")
+        if not path.resolve().is_relative_to(repository.resolve()):
+            raise BundleError("SDK installation path escapes the repository")
+    return path
 
 
 def _select_target(definition: dict, triple: str) -> dict:
@@ -634,7 +796,9 @@ def _materialize_links(root: Path, executable_paths: set[str] | None = None) -> 
         staging.replace(link)
 
 
-def _install_metadata(definition: dict, directory: Path | None, package_root: Path) -> None:
+def _install_metadata(
+    definition: dict, directory: Path | None, package_root: Path, payload_root: Path
+) -> None:
     if directory is None:
         raise BundleError("metadata_directory is required for pinned license and notices")
     for metadata in definition["metadata"]:
@@ -650,6 +814,7 @@ def _install_metadata(definition: dict, directory: Path | None, package_root: Pa
             or destination.name.casefold()
             in {"package.py", "manifest.json", "provenance.json", "sha256sums.txt"}
             or destination.parts[len(package_root.parts)].casefold() == "payload"
+            or destination.is_relative_to(payload_root)
         ):
             raise BundleError(f"metadata destination collision: {metadata['destination']!r}")
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -758,8 +923,8 @@ def _write_system_package(repository: Path, family: str, version: str) -> None:
     )
 
 
-def _bundle_manifest(definition: dict, target: dict, asset_name: str) -> dict:
-    package_root = f"{definition['tool']}/{definition['version']}"
+def _bundle_manifest(definition: dict, target: dict, asset_name: str, plan: dict) -> dict:
+    package_root = plan["package_relative_path"]
     return {
         "schema_version": 1,
         "tool": definition["tool"],
@@ -769,7 +934,7 @@ def _bundle_manifest(definition: dict, target: dict, asset_name: str) -> dict:
         "triple": target["triple"],
         "asset_name": asset_name,
         "package_root": package_root,
-        "payload_root": f"{package_root}/payload",
+        "payload_root": f"{plan['variant_relative_path']}/payload",
         "upstream": {
             "manifest_url": definition["upstream_manifest"],
             "archive_url": target["upstream"]["url"],
@@ -916,6 +1081,8 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--source-archive", type=Path)
     parser.add_argument("--metadata-dir", type=Path)
+    parser.add_argument("--sdk-executable", type=Path)
+    parser.add_argument("--repository", type=Path, action="append", default=[])
     parser.add_argument("--no-smoke-test", action="store_true")
     args = parser.parse_args()
     try:
@@ -925,6 +1092,8 @@ def main() -> int:
             args.output_dir,
             source_archive=args.source_archive,
             metadata_directory=args.metadata_dir or args.definition.parent,
+            sdk_executable=args.sdk_executable,
+            repositories=args.repository,
             smoke_test=not args.no_smoke_test,
         )
     except (BundleError, OSError, ValueError, KeyError) as error:

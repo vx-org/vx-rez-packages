@@ -10,6 +10,7 @@ import tarfile
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -21,22 +22,42 @@ from tools.build_bundle import (
     BundleError,
     _audit_native_tree,
     _extract_archive,
+    _installation_plan,
     _materialize_links,
     _normalize_machine,
+    _planned_directory,
     _read_package_definition,
     _seven_zip_entries,
     _validate_archive_entries,
     build_bundle,
+    expected_release_tag,
     load_definition,
+    validate_definition,
 )
 from tools.collect_notices import collect_notices
 from tools.generate_index import generate_index_from_directory, generate_index_from_release
+from tools.release_tag import main as release_tag_main
 
 TRIPLE = "x86_64-pc-windows-msvc"
 
 
 def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def installation_plan(definition: dict, *, variant: bool = False) -> dict:
+    package = f"{definition['tool']}/{definition['version']}"
+    return {
+        "schema_version": 1,
+        "name": definition["tool"],
+        "version": definition["version"],
+        "platform": "windows",
+        "arch": "x86_64",
+        "variant_index": 2 if variant else None,
+        "variant_requirements": ["platform-windows", "arch-x86_64"] if variant else [],
+        "package_relative_path": package,
+        "variant_relative_path": package + "/platform-windows/arch-x86_64" if variant else package,
+    }
 
 
 def recipe(directory: Path, source: Path, archive_format: str = "binary") -> dict:
@@ -140,14 +161,17 @@ class BundleContractTests(unittest.TestCase):
         output: str = "dist",
         smoke_test: bool = False,
     ) -> Path:
-        return build_bundle(
-            definition or self.definition,
-            TRIPLE,
-            self.root / output,
-            source_archive=source or self.source,
-            metadata_directory=self.root,
-            smoke_test=smoke_test,
-        )
+        selected = definition or self.definition
+        plan = installation_plan(selected)
+        with patch("tools.build_bundle._installation_plan", return_value=plan):
+            return build_bundle(
+                selected,
+                TRIPLE,
+                self.root / output,
+                source_archive=source or self.source,
+                metadata_directory=self.root,
+                smoke_test=smoke_test,
+            )
 
     def test_builds_deterministic_real_package_with_complete_checksums(self) -> None:
         first = self.build()
@@ -236,6 +260,205 @@ class BundleContractTests(unittest.TestCase):
         ):
             self.build()
         install.assert_not_called()
+
+    def test_package_hash_precedes_sdk_planning_and_payload_download(self) -> None:
+        (self.root / "package.py").write_bytes(b"changed package definition")
+        with (
+            patch("tools.build_bundle._installation_plan") as plan,
+            patch("tools.build_bundle._download") as download,
+            self.assertRaisesRegex(BundleError, "package definition checksum mismatch"),
+        ):
+            build_bundle(
+                self.definition, TRIPLE, self.root / "hash-first", metadata_directory=self.root
+            )
+        plan.assert_not_called()
+        download.assert_not_called()
+
+    def test_builder_requires_an_explicit_sdk_without_layout_fallback(self) -> None:
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch("tools.build_bundle._install_payload") as install,
+            self.assertRaisesRegex(BundleError, "sdk-executable.*required"),
+        ):
+            build_bundle(
+                self.definition, TRIPLE, self.root / "no-sdk", metadata_directory=self.root
+            )
+        install.assert_not_called()
+
+    def test_sdk_plan_rejects_wrong_identity_target_and_unsafe_layout_before_payload(self) -> None:
+        sdk = self.root / "reviewed-sdk.exe"
+        sdk.write_bytes(b"mock SDK executable; never executed")
+        valid = installation_plan(self.definition, variant=True)
+        cases = [
+            {"schema_version": 2},
+            {"schema_version": True},
+            {"name": "another"},
+            {"version": "1.2.4"},
+            {"version": None},
+            {"platform": "linux"},
+            {"arch": "arm_64"},
+            {"variant_index": True},
+            {"variant_index": -1},
+            {"variant_requirements": [42]},
+            {"variant_requirements": [""]},
+            {"package_relative_path": "another/1.2.3"},
+            {"variant_relative_path": "fixture/1.2.3-other/payload"},
+            {"variant_relative_path": "fixture/1.2.3/../escape"},
+            {"variant_relative_path": "/fixture/1.2.3"},
+            {"variant_relative_path": "C:/fixture/1.2.3"},
+            {"variant_relative_path": "fixture\\1.2.3\\escape"},
+            {"variant_relative_path": "fixture/1.2.3/CON"},
+            {"variant_relative_path": "fixture/1.2.3/trailing/"},
+            {"variant_relative_path": "fixture/1.2.3//double"},
+            {"variant_relative_path": "fixture/1.2.3/package.py/child"},
+            {"variant_relative_path": "fixture/1.2.3/MANIFEST.JSON/child"},
+            {"variant_index": None},
+        ]
+        for changed in cases:
+            with (
+                self.subTest(changed=changed),
+                patch(
+                    "tools.build_bundle.subprocess.run",
+                    return_value=subprocess.CompletedProcess(
+                        [], 0, json.dumps(valid | changed), ""
+                    ),
+                ),
+                patch("tools.build_bundle._install_payload") as install,
+                self.assertRaises(BundleError),
+            ):
+                build_bundle(
+                    self.definition,
+                    TRIPLE,
+                    self.root / "invalid-plan",
+                    source_archive=self.source,
+                    metadata_directory=self.root,
+                    sdk_executable=sdk,
+                    smoke_test=False,
+                )
+            install.assert_not_called()
+
+    def test_sdk_protocol_failures_are_not_replaced_by_a_flat_layout(self) -> None:
+        sdk = self.root / "sdk.exe"
+        sdk.write_bytes(b"not executed")
+        for output in ("not JSON", "[]", '{"schema_version":1,"schema_version":1}'):
+            with (
+                self.subTest(output=output),
+                patch(
+                    "tools.build_bundle.subprocess.run",
+                    return_value=subprocess.CompletedProcess([], 0, output, ""),
+                ),
+                self.assertRaisesRegex(BundleError, "JSON|fields|duplicate"),
+            ):
+                _installation_plan(
+                    self.root / "package.py",
+                    self.definition,
+                    self.definition["targets"][0],
+                    sdk,
+                    (),
+                )
+        for error in (
+            subprocess.CalledProcessError(2, [str(sdk)]),
+            subprocess.TimeoutExpired([str(sdk)], 60),
+        ):
+            with (
+                self.subTest(error=error),
+                patch("tools.build_bundle.subprocess.run", side_effect=error),
+                self.assertRaisesRegex(BundleError, "SDK installation planning failed"),
+            ):
+                _installation_plan(
+                    self.root / "package.py",
+                    self.definition,
+                    self.definition["targets"][0],
+                    sdk,
+                    (),
+                )
+
+    def test_authoritative_variant_plan_places_payload_smoke_and_modes_at_actual_root(self) -> None:
+        contents = (
+            b"name = 'fixture'\nversion = '1.2.3'\n"
+            b"variants = [['platform-linux'], ['platform-osx'], "
+            b"['platform-windows', 'arch-x86_64']]\n"
+            b"def commands():\n    env.PATH.prepend('{root}/payload/bin')\n"
+        )
+        self.pin_package(contents)
+        sdk = self.root / "sdk.exe"
+        sdk.write_bytes(b"not executed")
+        dependency = self.root / "dependencies"
+        dependency.mkdir()
+        plan = installation_plan(self.definition, variant=True)
+        observed = []
+
+        def sdk_then_native(command, **kwargs):
+            if command[1] == "installation-plan":
+                self.assertEqual(Path(command[3]).read_bytes(), contents)
+                self.assertEqual(command[-2:], ["--repository", str(dependency.resolve())])
+                self.assertFalse(kwargs["shell"])
+                return subprocess.CompletedProcess(command, 0, json.dumps(plan), "")
+            native = Path(command[0])
+            self.assertEqual(native.read_bytes(), self.source.read_bytes())
+            self.assertEqual(Path(kwargs["cwd"]).parts[-2:], ("platform-windows", "arch-x86_64"))
+            self.assertEqual(
+                native.relative_to(kwargs["cwd"]).as_posix(), "payload/bin/fixture.exe"
+            )
+            (Path(kwargs["cwd"]) / "smoke-only").write_bytes(b"must not ship")
+            observed.append(native)
+            return subprocess.CompletedProcess(command, 0, "fixture 1.2.3", "")
+
+        with (
+            patch("tools.build_bundle.host_platform.system", return_value="Windows"),
+            patch("tools.build_bundle.host_platform.machine", return_value="AMD64"),
+            patch("tools.build_bundle.subprocess.run", side_effect=sdk_then_native),
+        ):
+            asset = build_bundle(
+                self.definition,
+                TRIPLE,
+                self.root / "variant-dist",
+                source_archive=self.source,
+                metadata_directory=self.root,
+                sdk_executable=sdk,
+                repositories=[dependency],
+            )
+        self.assertEqual(len(observed), 1)
+        unpack(asset, self.root / "variant-unpacked")
+        package = self.root / "variant-unpacked/fixture/1.2.3"
+        self.assertEqual((package / "package.py").read_bytes(), contents)
+        self.assertFalse((package / "payload").exists())
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(manifest["payload_root"], plan["variant_relative_path"] + "/payload")
+        executable_name = manifest["payload_root"] + "/bin/fixture.exe"
+        self.assertEqual(archive_modes(asset)[executable_name], 0o755)
+        self.assertNotIn("smoke-only", str(archive_modes(asset)))
+        self.assertIn(executable_name, (package / "sha256sums.txt").read_text())
+
+    def test_installation_path_rejects_existing_symlink_components(self) -> None:
+        repository = self.root / "layout-repository"
+        repository.mkdir()
+        outside = self.root / "outside-layout"
+        outside.mkdir()
+        try:
+            (repository / "fixture").symlink_to(outside, target_is_directory=True)
+        except OSError:
+            self.skipTest("native symlink creation is unavailable")
+        with self.assertRaisesRegex(BundleError, "link|escapes"):
+            _planned_directory(repository, "fixture/1.2.3/platform-windows")
+
+    def test_metadata_cannot_be_inserted_into_the_selected_variant_payload(self) -> None:
+        plan = installation_plan(self.definition, variant=True)
+        self.definition["metadata"][0]["destination"] = (
+            "platform-windows/arch-x86_64/payload/injected-metadata"
+        )
+        with (
+            patch("tools.build_bundle._installation_plan", return_value=plan),
+            self.assertRaisesRegex(BundleError, "metadata destination collision"),
+        ):
+            build_bundle(
+                self.definition,
+                TRIPLE,
+                self.root / "metadata-collision",
+                source_archive=self.source,
+                metadata_directory=self.root,
+                smoke_test=False,
+            )
 
     def test_package_definition_is_mandatory_and_uses_contained_regular_source(self) -> None:
         specification = self.definition["package"].pop("definition")
@@ -842,6 +1065,154 @@ class BundleContractTests(unittest.TestCase):
                 asset.parent,
                 repository="vx-org/fixture",
                 release_tag="fixture-1.2.3",
+            )
+
+    def test_release_tag_defaults_to_runtime_version_and_accepts_positive_revisions(self) -> None:
+        self.assertEqual(expected_release_tag(self.definition), "fixture-1.2.3")
+        for revision in (1, 12):
+            with self.subTest(revision=revision):
+                revised = self.definition | {"build_revision": revision}
+                validate_definition(revised)
+                self.assertEqual(expected_release_tag(revised), f"fixture-1.2.3-r{revision}")
+                self.assertEqual(revised["version"], "1.2.3")
+
+    def test_release_revision_rejects_nonpositive_boolean_float_and_string_values(self) -> None:
+        for revision in (0, -1, True, False, 1.0, "1", None):
+            with self.subTest(revision=revision):
+                revised = self.definition | {"build_revision": revision}
+                with self.assertRaisesRegex(BundleError, "build_revision.*positive integer"):
+                    validate_definition(revised)
+                with self.assertRaisesRegex(BundleError, "build_revision.*positive integer"):
+                    expected_release_tag(revised)
+
+    def test_packaging_revision_keeps_package_bytes_version_and_bundle_name(self) -> None:
+        original_definition = (self.root / "package.py").read_bytes()
+        original_asset = self.build(output="unrevised")
+        self.definition["build_revision"] = 1
+        revised_asset = self.build(output="revised")
+        self.assertEqual(original_asset.name, revised_asset.name)
+        self.assertNotEqual(original_asset.read_bytes(), revised_asset.read_bytes())
+        unpack(revised_asset, self.root / "revised-unpacked")
+        package = self.root / "revised-unpacked/fixture/1.2.3"
+        self.assertEqual((package / "package.py").read_bytes(), original_definition)
+        manifest = json.loads((package / "manifest.json").read_text())
+        self.assertEqual(manifest["version"], "1.2.3")
+        self.assertEqual(manifest["package_root"], "fixture/1.2.3")
+        provenance = json.loads((package / "provenance.json").read_text())
+        self.assertEqual(provenance["build_revision"], 1)
+        self.assertEqual(provenance["release_tag"], "fixture-1.2.3-r1")
+        index = generate_index_from_directory(
+            self.definition,
+            revised_asset.parent,
+            repository="vx-org/fixture",
+            release_tag="fixture-1.2.3-r1",
+            generated_at="2026-10-04T00:00:00Z",
+        )
+        entry = index["bundles"][0]
+        self.assertEqual(index["schema_version"], 1)
+        self.assertEqual(index["release_tag"], "fixture-1.2.3-r1")
+        self.assertEqual(entry["version"], "1.2.3")
+        self.assertEqual(entry["package_root"], "fixture/1.2.3")
+        self.assertEqual(entry["asset_name"], original_asset.name)
+        self.assertEqual(
+            entry["download_url"],
+            f"https://github.com/vx-org/fixture/releases/download/fixture-1.2.3-r1/{original_asset.name}",
+        )
+        readback = generate_index_from_release(
+            self.definition,
+            {
+                "tag_name": "fixture-1.2.3-r1",
+                "assets": [
+                    {
+                        "name": revised_asset.name,
+                        "browser_download_url": entry["download_url"],
+                    }
+                ],
+            },
+            {
+                revised_asset.name + ".sha256": revised_asset.with_name(
+                    revised_asset.name + ".sha256"
+                ).read_text()
+            },
+            repository="vx-org/fixture",
+            generated_at="2026-10-04T00:00:00Z",
+        )
+        self.assertEqual(readback, index)
+
+    def test_revised_recipe_rejects_old_or_different_revision_tags_before_asset_access(
+        self,
+    ) -> None:
+        self.definition["build_revision"] = 1
+        for tag in ("fixture-1.2.3", "fixture-1.2.3-r0", "fixture-1.2.3-r01", "fixture-1.2.3-r2"):
+            with self.subTest(tag=tag):
+                with self.assertRaisesRegex(BundleError, "release tag mismatch"):
+                    generate_index_from_directory(
+                        self.definition,
+                        self.root / "absent-assets",
+                        repository="vx-org/fixture",
+                        release_tag=tag,
+                    )
+                with self.assertRaisesRegex(BundleError, "release tag mismatch"):
+                    generate_index_from_release(
+                        self.definition,
+                        {"tag_name": tag, "assets": []},
+                        {},
+                        repository="vx-org/fixture",
+                    )
+        self.definition.pop("build_revision")
+        with self.assertRaisesRegex(BundleError, "release tag mismatch"):
+            generate_index_from_release(
+                self.definition,
+                {"tag_name": "fixture-1.2.3-r1", "assets": []},
+                {},
+                repository="vx-org/fixture",
+            )
+
+    def test_release_tag_cli_prints_authoritative_tag_and_checks_exact_match(self) -> None:
+        self.definition["build_revision"] = 1
+        path = self.root / "recipe.json"
+        path.write_text(json.dumps(self.definition), encoding="utf-8")
+        for arguments in ([], ["--check", "fixture-1.2.3-r1"]):
+            output = io.StringIO()
+            with (
+                self.subTest(arguments=arguments),
+                redirect_stdout(output),
+                patch("sys.argv", ["release_tag", "--definition", str(path), *arguments]),
+            ):
+                self.assertEqual(release_tag_main(), 0)
+            self.assertEqual(output.getvalue(), "fixture-1.2.3-r1\n")
+        error_output = io.StringIO()
+        with (
+            redirect_stderr(error_output),
+            patch(
+                "sys.argv", ["release_tag", "--definition", str(path), "--check", "fixture-1.2.3"]
+            ),
+            self.assertRaises(SystemExit) as exit_status,
+        ):
+            release_tag_main()
+        self.assertEqual(exit_status.exception.code, 1)
+        self.assertIn("expected 'fixture-1.2.3-r1'", error_output.getvalue())
+
+    def test_revised_release_metadata_cannot_reuse_an_old_tag_download_url(self) -> None:
+        self.definition["build_revision"] = 1
+        asset_name = f"fixture-1.2.3-{TRIPLE}.rez.tar.zst"
+        release = {
+            "tag_name": "fixture-1.2.3-r1",
+            "assets": [
+                {
+                    "name": asset_name,
+                    "browser_download_url": (
+                        f"https://github.com/vx-org/fixture/releases/download/fixture-1.2.3/{asset_name}"
+                    ),
+                }
+            ],
+        }
+        with self.assertRaisesRegex(BundleError, "asset URL does not match its tag"):
+            generate_index_from_release(
+                self.definition,
+                release,
+                {asset_name + ".sha256": f"{'a' * 64}  {asset_name}\n"},
+                repository="vx-org/fixture",
             )
 
     def test_collects_real_license_texts_from_verified_source(self) -> None:

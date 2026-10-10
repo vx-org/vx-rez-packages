@@ -22,7 +22,7 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: loonghao/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+      - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
         with:
           tools: "uv actionlint"
           cache: "true"
@@ -32,3 +32,26 @@ jobs:
       - run: vx uv run --locked ruff check .
       - run: vx uv run --locked python -m unittest discover -s tests -v
       - run: vx actionlint
+
+  consumer-contract:
+    name: Public adapter contract (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+        with:
+          cache: "true"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+      - name: Install checked Rust components in the VX environment
+        run: vx rustup toolchain install 1.95.0 --profile minimal --component rustfmt --component clippy
+      - run: vx cargo +1.95.0 fmt --manifest-path tools/consumer-contract/Cargo.toml --check
+      - run: vx cargo +1.95.0 clippy --manifest-path tools/consumer-contract/Cargo.toml --locked --all-targets -- -D warnings
+      - run: vx cargo +1.95.0 test --manifest-path tools/consumer-contract/Cargo.toml --locked

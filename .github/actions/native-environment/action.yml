@@ -1,0 +1,103 @@
+name: Native runtime acceptance environment
+description: Install verified VX, native Rust, the public SDK CLI and the public adapter consumer
+inputs:
+  tooling-directory:
+    description: Checked out shared tooling repository
+    required: false
+    default: tooling
+  architecture:
+    description: Recipe architecture (x86_64 or arm_64)
+    required: true
+  sdk-version:
+    description: Reviewed published rez-next-runtime version
+    required: true
+outputs:
+  sdk-executable:
+    description: Absolute public SDK CLI executable
+    value: ${{ steps.executables.outputs.sdk-executable }}
+  consumer-executable:
+    description: Absolute native public adapter consumer executable
+    value: ${{ steps.executables.outputs.consumer-executable }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v7
+      id: python
+      with:
+        python-version: "3.12"
+        architecture: ${{ inputs.architecture == 'arm_64' && 'arm64' || 'x64' }}
+    - name: Bootstrap verified x64 VX on Windows ARM
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      shell: pwsh
+      run: |
+        $ErrorActionPreference = 'Stop'
+        $archive = Join-Path $env:RUNNER_TEMP 'vx-0.9.35-x64.zip'
+        Invoke-WebRequest 'https://github.com/vx-org/vx/releases/download/v0.9.35/vx-0.9.35-x86_64-pc-windows-msvc.zip' -OutFile $archive
+        $expected = '514d1f69141ba334c7338ce97673f01c037162e1c6d71848d0d727d8bb40f621'
+        if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expected) { throw 'VX bootstrap checksum mismatch' }
+        $install = Join-Path $env:RUNNER_TEMP 'vx-bootstrap'
+        Expand-Archive -LiteralPath $archive -DestinationPath $install
+        $binary = Get-ChildItem -LiteralPath $install -Recurse -Filter vx.exe | Select-Object -First 1
+        if (-not $binary) { throw 'VX bootstrap executable missing' }
+        $binary.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        & $binary.FullName --version
+        if ($LASTEXITCODE -ne 0) { throw 'VX bootstrap execution failed' }
+    - uses: vx-org/vx@b2c1ce558af4b516261f34a27eb0576a9bec45f1
+      if: runner.os != 'Windows' || runner.arch != 'ARM64'
+      with:
+        tools: uv
+        cache: "true"
+        github-token: ${{ github.token }}
+    - uses: dtolnay/rust-toolchain@1.95.0
+    - name: Install and verify the native Rust host toolchain
+      shell: bash
+      run: |
+        case "$RUNNER_OS/$RUNNER_ARCH" in
+          Windows/X64) rust_host=x86_64-pc-windows-msvc ;;
+          Windows/ARM64) rust_host=aarch64-pc-windows-msvc ;;
+          Linux/X64) rust_host=x86_64-unknown-linux-gnu ;;
+          Linux/ARM64) rust_host=aarch64-unknown-linux-gnu ;;
+          macOS/X64) rust_host=x86_64-apple-darwin ;;
+          macOS/ARM64) rust_host=aarch64-apple-darwin ;;
+          *) echo 'Unsupported native runner host' >&2; exit 1 ;;
+        esac
+        toolchain="1.95.0-$rust_host"
+        vx rustup toolchain install "$toolchain" --profile minimal
+        metadata=$(vx rustc +"$toolchain" -vV)
+        [[ "$metadata" == *"host: $rust_host"* ]]
+        echo "RUST_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
+    - name: Install locked Python tooling
+      shell: bash
+      working-directory: ${{ inputs.tooling-directory }}
+      env:
+        PYTHON_PATH: ${{ steps.python.outputs.python-path }}
+      run: vx uv sync --locked --python "$PYTHON_PATH"
+    - name: Install the pinned public SDK CLI
+      shell: bash
+      env:
+        REZ_SDK_VERSION: ${{ inputs.sdk-version }}
+      run: vx cargo +"$RUST_TOOLCHAIN" install rez-next-runtime --version "=$REZ_SDK_VERSION" --locked --root "$RUNNER_TEMP/rez-sdk"
+    - name: Build the native public adapter consumer
+      shell: bash
+      working-directory: ${{ inputs.tooling-directory }}
+      run: vx cargo +"$RUST_TOOLCHAIN" build --manifest-path tools/consumer-contract/Cargo.toml --locked
+    - name: Bind exact native executable paths
+      id: executables
+      shell: bash
+      working-directory: ${{ inputs.tooling-directory }}
+      run: |
+        vx uv run --locked python - <<'PY' >> "$GITHUB_OUTPUT"
+        import os
+        from pathlib import Path
+
+        suffix = ".exe" if os.name == "nt" else ""
+        executables = {
+            "sdk-executable": Path(os.environ["RUNNER_TEMP"]) / "rez-sdk" / "bin" / ("rez-next-runtime" + suffix),
+            "consumer-executable": Path("tools/consumer-contract/target/debug") / ("vx-runtime-consumer-contract" + suffix),
+        }
+        for name, executable in executables.items():
+            executable = executable.resolve(strict=True)
+            if not executable.is_file():
+                raise SystemExit(f"Missing native executable: {name}")
+            print(f"{name}={executable}")
+        PY

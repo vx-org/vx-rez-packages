@@ -13,7 +13,7 @@ from pathlib import Path
 
 import jsonschema
 
-from tools.build_bundle import BundleError, load_definition
+from tools.build_bundle import BundleError, expected_release_tag, load_definition
 
 ROOT = Path(__file__).resolve().parents[1]
 INDEX_SCHEMA = ROOT / "schema" / "release-index.schema.json"
@@ -80,6 +80,9 @@ def generate_index_from_release(
         asset = assets.get(asset_name)
         if asset is None or checksum_name not in checksum_contents:
             raise BundleError(f"GitHub release is missing {asset_name} or its checksum")
+        download_url = _release_url(repository, release_tag, asset_name)
+        if asset.get("browser_download_url") != download_url:
+            raise BundleError(f"GitHub release asset URL does not match its tag: {asset_name}")
         bundles.append(
             {
                 "tool": definition["tool"],
@@ -88,7 +91,7 @@ def generate_index_from_release(
                 "arch": target["arch"],
                 "triple": target["triple"],
                 "asset_name": asset_name,
-                "download_url": asset["browser_download_url"],
+                "download_url": download_url,
                 "sha256": _parse_checksum(checksum_contents[checksum_name], asset_name),
                 "bundle_schema_version": 1,
                 "package_root": f"{definition['tool']}/{definition['version']}",
@@ -135,7 +138,7 @@ def _asset_name(definition: dict, target: dict) -> str:
 
 
 def _validate_release_tag(definition: dict, release_tag: str) -> None:
-    expected = f"{definition['tool']}-{definition['version']}"
+    expected = expected_release_tag(definition)
     if release_tag != expected:
         raise BundleError(f"release tag mismatch: expected {expected!r}, got {release_tag!r}")
 

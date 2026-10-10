@@ -64,7 +64,9 @@ def _checked_download(url: str, sha256: str, path: Path, *, offline: bool) -> Pa
 def _relative(name: str) -> PurePosixPath:
     path = PurePosixPath(name)
     if (
-        path.is_absolute()
+        path.as_posix() != name
+        or "\x00" in name
+        or path.is_absolute()
         or not path.parts
         or any(part in {".", ".."} or ":" in part or "\\" in part for part in path.parts)
     ):
@@ -73,6 +75,7 @@ def _relative(name: str) -> PurePosixPath:
 
 
 def _verify_repository(repository: Path, selected: dict) -> None:
+    repository = repository.resolve(strict=True)
     package_root = repository.joinpath(*_relative(selected["package_root"]).parts)
     manifest_path = package_root / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -85,7 +88,23 @@ def _verify_repository(repository: Path, selected: dict) -> None:
     for key in ("tool", "version", "platform", "arch", "triple", "asset_name", "package_root"):
         if manifest[key] != selected[key]:
             raise CacheError(f"bundle manifest does not match release index: {key}")
+    if selected["package_root"] != f"{selected['tool']}/{selected['version']}":
+        raise CacheError("bundle package root does not match its identity")
+    payload_relative = _relative(manifest["payload_root"])
+    package_relative = _relative(selected["package_root"])
+    if payload_relative.name != "payload" or not payload_relative.is_relative_to(package_relative):
+        raise CacheError("bundle payload root must remain inside its package")
+    payload_root = repository.joinpath(*payload_relative.parts)
+    if not payload_root.is_dir():
+        raise CacheError("bundle payload root is missing")
+    current = repository
+    for component in payload_relative.parts:
+        current /= component
+        if current.is_symlink() or current.resolve() != current.absolute():
+            raise CacheError("bundle payload root contains a link")
     checksum_path = repository.joinpath(*_relative(manifest["checksums"]["file"]).parts)
+    if checksum_path != package_root / "sha256sums.txt":
+        raise CacheError("bundle checksum list must remain at its package root")
     declared: set[str] = set()
     for line in checksum_path.read_text(encoding="utf-8").splitlines():
         match = re.fullmatch(r"([a-f0-9]{64})  (.+)", line)
@@ -108,6 +127,38 @@ def _verify_repository(repository: Path, selected: dict) -> None:
         raise CacheError("repository file set differs from checksum list")
     if not (package_root / "package.py").is_file():
         raise CacheError("bundle contains no Rez package definition")
+
+
+def materialize_archive(archive_path: Path, sha256: str, repository: Path, selected: dict) -> Path:
+    """Safely extract a pinned bundle and verify its complete repository contract."""
+    if not re.fullmatch(r"[a-f0-9]{64}", sha256) or _digest(archive_path) != sha256:
+        raise CacheError("bundle archive checksum mismatch")
+    if repository.exists():
+        _verify_repository(repository, selected)
+        return repository
+    repository.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=repository.parent) as temporary:
+        staging = Path(temporary) / "repository"
+        staging.mkdir()
+        seen: set[str] = set()
+        with (
+            archive_path.open("rb") as source,
+            zstandard.ZstdDecompressor().stream_reader(source) as decompressed,
+            tarfile.open(fileobj=decompressed, mode="r|") as archive,
+        ):
+            for member in archive:
+                relative = _relative(member.name).as_posix()
+                if relative.casefold() in seen or not (member.isfile() or member.isdir()):
+                    raise CacheError(f"duplicate or unsupported repository member: {member.name}")
+                seen.add(relative.casefold())
+                member.mode &= 0o777
+                archive.extract(member, staging, filter="data")
+        _verify_repository(staging, selected)
+        try:
+            staging.rename(repository)
+        except FileExistsError:
+            _verify_repository(repository, selected)
+    return repository
 
 
 def provision(
@@ -146,33 +197,7 @@ def provision(
     archive_path = _checked_download(
         selected["download_url"], digest, cache / "archives" / digest, offline=offline
     )
-    repository = cache / "repositories" / digest
-    if repository.exists():
-        _verify_repository(repository, selected)
-        return repository
-    repository.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=repository.parent) as temporary:
-        staging = Path(temporary) / "repository"
-        staging.mkdir()
-        seen: set[str] = set()
-        with (
-            archive_path.open("rb") as source,
-            zstandard.ZstdDecompressor().stream_reader(source) as decompressed,
-            tarfile.open(fileobj=decompressed, mode="r|") as archive,
-        ):
-            for member in archive:
-                relative = _relative(member.name).as_posix()
-                if relative.casefold() in seen or not (member.isfile() or member.isdir()):
-                    raise CacheError(f"duplicate or unsupported repository member: {member.name}")
-                seen.add(relative.casefold())
-                member.mode &= 0o777
-                archive.extract(member, staging, filter="data")
-        _verify_repository(staging, selected)
-        try:
-            staging.rename(repository)
-        except FileExistsError:
-            _verify_repository(repository, selected)
-    return repository
+    return materialize_archive(archive_path, digest, cache / "repositories" / digest, selected)
 
 
 def main() -> int:
