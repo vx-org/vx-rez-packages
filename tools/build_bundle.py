@@ -1038,7 +1038,14 @@ def _smoke_test(package_root: Path, definition: dict, target: dict) -> None:
                 cwd=package_root,
                 env=environment,
             )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+    except subprocess.CalledProcessError as error:
+        stdout = (error.stdout or "").strip()[:2000]
+        stderr = (error.stderr or "").strip()[:2000]
+        raise BundleError(
+            f"native smoke test failed with exit code {error.returncode}; "
+            f"stdout: {stdout}; stderr: {stderr}"
+        ) from error
+    except (OSError, subprocess.TimeoutExpired) as error:
         raise BundleError(f"native smoke test failed: {error}") from error
     expected = smoke["expect"].format_map(substitutions)
     if expected not in result.stdout + result.stderr:

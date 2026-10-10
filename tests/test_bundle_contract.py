@@ -987,6 +987,23 @@ class BundleContractTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][1:], ["--version"])
             self.assertFalse(run.call_args.kwargs.get("shell", False))
 
+    def test_native_smoke_failure_preserves_exit_code_and_bounded_output(self) -> None:
+        failure = subprocess.CalledProcessError(
+            17, ["fixture.exe"], output="native output", stderr="AssertionError\n" + "x" * 5000
+        )
+        with (
+            patch("tools.build_bundle.host_platform.system", return_value="Windows"),
+            patch("tools.build_bundle.host_platform.machine", return_value="AMD64"),
+            patch("tools.build_bundle.subprocess.run", side_effect=failure),
+            self.assertRaises(BundleError) as caught,
+        ):
+            self.build(smoke_test=True)
+        message = str(caught.exception)
+        self.assertIn("exit code 17", message)
+        self.assertIn("native output", message)
+        self.assertIn("AssertionError", message)
+        self.assertLess(len(message), 2200)
+
     def test_smoke_writes_only_to_an_isolated_copy_and_home(self) -> None:
         observed_homes = []
 

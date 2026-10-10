@@ -314,10 +314,33 @@ pub fn verify_and_launch(request: &ContractRequest) -> Result<Receipt, ContractE
     let adapter = RezAdapter::new();
     let resolved = adapter.resolve_env(&resolve)?;
     validate_resolution(request, &resolved)?;
+    #[cfg(not(windows))]
+    let launch_environment = resolved.environment.clone();
+    #[cfg(windows)]
+    let launch_environment = {
+        let mut environment = resolved.environment.clone();
+        // Windows needs its loader root even when the process environment is explicit.
+        let system_root = std::env::var("SystemRoot")
+            .map_err(|_| ContractError::Invalid("native SystemRoot is unavailable".to_string()))?;
+        require(
+            Path::new(&system_root).is_absolute()
+                && Path::new(&system_root).join("System32").is_dir(),
+            "native SystemRoot is invalid",
+        )?;
+        let key = env_key("SystemRoot");
+        require(
+            environment
+                .get(&key)
+                .is_none_or(|value| value == &system_root),
+            "package SystemRoot differs from the native loader root",
+        )?;
+        environment.insert(key, system_root);
+        environment
+    };
     launch_phase(
         &adapter,
         request,
-        &resolved.environment,
+        &launch_environment,
         &request.executable,
         "direct",
     )?;
@@ -336,7 +359,7 @@ pub fn verify_and_launch(request: &ContractRequest) -> Result<Receipt, ContractE
     launch_phase(
         &adapter,
         request,
-        &resolved.environment,
+        &launch_environment,
         Path::new(filename),
         "bare",
     )?;
