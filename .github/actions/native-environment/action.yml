@@ -63,7 +63,7 @@ runs:
         esac
         toolchain="1.95.0-$rust_host"
         vx rustup toolchain install "$toolchain" --profile minimal
-        metadata=$(vx rustc +"$toolchain" -vV)
+        metadata=$(vx rustup run "$toolchain" rustc -vV)
         [[ "$metadata" == *"host: $rust_host"* ]]
         echo "RUST_TOOLCHAIN=$toolchain" >> "$GITHUB_ENV"
     - name: Install locked Python tooling
@@ -76,11 +76,11 @@ runs:
       shell: bash
       env:
         REZ_SDK_VERSION: ${{ inputs.sdk-version }}
-      run: vx cargo +"$RUST_TOOLCHAIN" install rez-next-runtime --version "=$REZ_SDK_VERSION" --locked --root "$RUNNER_TEMP/rez-sdk"
+      run: vx rustup run "$RUST_TOOLCHAIN" cargo install rez-next-runtime --version "=$REZ_SDK_VERSION" --locked --root "$RUNNER_TEMP/rez-sdk"
     - name: Build the native public adapter consumer
       shell: bash
       working-directory: ${{ inputs.tooling-directory }}
-      run: vx cargo +"$RUST_TOOLCHAIN" build --manifest-path tools/consumer-contract/Cargo.toml --locked
+      run: vx rustup run "$RUST_TOOLCHAIN" cargo build --manifest-path tools/consumer-contract/Cargo.toml --locked
     - name: Bind exact native executable paths
       id: executables
       shell: bash
