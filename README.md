@@ -14,7 +14,7 @@ Each `.rez.tar.zst` asset is a directly extractable Rez repository:
 
 ```text
 witr/0.3.4/package.py
-witr/0.3.4/payload/bin/witr[.exe]
+witr/0.3.4/platform-<platform>/arch-<arch>/payload/bin/witr[.exe]
 witr/0.3.4/LICENSE
 witr/0.3.4/THIRD_PARTY_NOTICES.txt
 witr/0.3.4/provenance.json
@@ -43,6 +43,24 @@ consumer. The actual file owns dependencies, variants, tools and environment
 commands. No package definition is generated as a fallback. Existing recipe
 `description`, `tools` and `path_entries` fields remain descriptive expectations;
 they do not rewrite the copied definition.
+
+The builder requires a reviewed Rez Next SDK executable through
+`--sdk-executable` or `VX_REZ_SDK_EXECUTABLE`. After checking the definition hash,
+it passes a private copy of those exact bytes and the explicit target to the
+SDK's `installation-plan` command. Rez Next Core selects the variant and derives
+the installation paths. The builder validates the returned identity, target and
+contained relative paths; it does not parse variant requirements or select a
+layout itself. Missing SDKs, dependencies or compatible variants fail the build.
+Actual dependency repositories can be supplied with repeated `--repository`.
+
+`package.py` and release metadata stay at the package version root. Payloads go
+under the selected variant root, which is the runtime's `{root}`; packages without
+variants use the package version root. The manifest's `payload_root`, executable
+modes, native smoke command and repository checksums all name that actual location.
+Smoke execution uses an isolated copy of the complete package with its working
+directory and `{root}` set to the selected variant. Caches accept both flat and
+nested payload locations and require the declared payload directory to remain
+inside the indexed package without links.
 
 Recipes also declare a native smoke command, pinned
 upstream revision/source archive, hashed legal metadata and target assets. Each
@@ -93,7 +111,7 @@ vx uv sync --locked
 vx uv run --locked python -m unittest discover -s tests -v
 vx uv run --locked ruff format --check .
 vx uv run --locked ruff check .
-vx uv run --locked python -m tools.build_bundle --definition ../witr/recipe.json --triple x86_64-pc-windows-msvc --output-dir dist
+vx uv run --locked python -m tools.build_bundle --definition ../witr/recipe.json --triple x86_64-pc-windows-msvc --output-dir dist --sdk-executable "$VX_REZ_SDK_EXECUTABLE"
 vx uv run --locked python -m tools.generate_index --definition ../witr/recipe.json --asset-dir dist --repository vx-org/witr --release-tag witr-0.3.4 --output dist/index.json
 ```
 
@@ -106,7 +124,15 @@ workflow for every target before release publication.
 Runtime repositories call `.github/workflows/runtime-release.yml` at an immutable
 builder commit and pass the same commit as `tooling-ref`. Pull requests build all
 targets without publishing. Tag releases publish only after all native jobs and
-index validation pass and the tag matches `<tool>-<version>`. Publication creates
+index validation pass and the tag matches the recipe's authoritative release tag.
+Omitting `build_revision` retains `<tool>-<version>`. An optional positive integer
+`"build_revision": 1` selects `<tool>-<version>-r1` for an immutable packaging
+correction while preserving the upstream runtime version, Rez package identity,
+package directory and bundle asset filename. Index download URLs name the revised
+tag; a catalog can pin that reviewed index for the same exact runtime version.
+`vx uv run --locked python -m tools.release_tag --definition ../witr/recipe.json`
+prints the expected tag; adding `--check <tag>` rejects any different tag.
+Publication creates
 a draft, downloads every uploaded asset and compares its names and SHA-256 with
 the validated local release before making the draft public. The workflow then
 reads back public release metadata and checksum companions, then downloads and
