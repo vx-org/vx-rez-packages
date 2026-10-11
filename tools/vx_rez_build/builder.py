@@ -28,6 +28,13 @@ from tools import build_bundle
 BUILD_SYSTEM_FILENAME = "build.py"
 FORBIDDEN_BUILD_SYSTEMS = frozenset({"custom"})
 
+#: Only the rez-next binary implements the ``build`` subcommand the wrapper needs.
+#: ``rez-next`` is preferred because the name is unambiguous: a legacy pip
+#: installation of ``rez`` 3.x also owns the ``rez`` name but has no
+#: ``--build-system`` flag, so it would fail with an unrecognised argument
+#: instead of reporting the missing rez-next build interface.
+REZ_EXECUTABLE_NAMES = ("rez-next", "rez")
+
 #: Rez reports the host arch as ``amd64``; the VX package family is ``arch-x86_64``.
 _HOST_ARCH_ALIASES = {"amd64": "x86_64", "x64": "x86_64", "arm64": "arm_64", "aarch64": "arm_64"}
 _HOST_PLATFORM_ALIASES = {"darwin": "osx", "windows": "windows", "linux": "linux"}
@@ -292,13 +299,14 @@ def _resolve_rez_executable() -> Path:
     configured = os.environ.get("VX_REZ_EXECUTABLE")
     if configured:
         return Path(configured)
-    found = shutil.which("rez")
-    if not found:
-        raise BuildError(
-            "the rez executable is required; install rez-next 0.3.10 "
-            "(cargo install rez-next --locked) or set VX_REZ_EXECUTABLE"
-        )
-    return Path(found)
+    for name in REZ_EXECUTABLE_NAMES:
+        found = shutil.which(name)
+        if found:
+            return Path(found)
+    raise BuildError(
+        "the rez-next executable is required; install rez-next 0.3.10 "
+        "(cargo install rez-next --locked) or set VX_REZ_EXECUTABLE"
+    )
 
 
 @contextmanager

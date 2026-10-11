@@ -286,9 +286,37 @@ class RezExecutionTests(unittest.TestCase):
         with (
             patch.dict(os.environ, environment, clear=True),
             patch.object(builder.shutil, "which", return_value=None),
-            self.assertRaisesRegex(BuildError, "rez executable is required"),
+            self.assertRaisesRegex(BuildError, "rez-next executable is required"),
         ):
             builder._resolve_rez_executable()
+
+    def test_prefers_rez_next_over_a_legacy_rez_on_path(self):
+        """A pip-installed rez 3.x shadows the name; rez-next must win."""
+        environment = dict(os.environ)
+        environment.pop("VX_REZ_EXECUTABLE", None)
+        resolved = {"rez": "/usr/bin/rez", "rez-next": "/usr/bin/rez-next"}
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(builder.shutil, "which", side_effect=resolved.get),
+        ):
+            self.assertEqual(builder._resolve_rez_executable(), Path("/usr/bin/rez-next"))
+
+    def test_falls_back_to_rez_when_rez_next_is_absent(self):
+        environment = dict(os.environ)
+        environment.pop("VX_REZ_EXECUTABLE", None)
+        resolved = {"rez": "/usr/bin/rez"}
+        with (
+            patch.dict(os.environ, environment, clear=True),
+            patch.object(builder.shutil, "which", side_effect=resolved.get),
+        ):
+            self.assertEqual(builder._resolve_rez_executable(), Path("/usr/bin/rez"))
+
+    def test_vx_rez_executable_overrides_path_lookup(self):
+        with (
+            patch.dict(os.environ, {"VX_REZ_EXECUTABLE": "/opt/rez-next"}, clear=True),
+            patch.object(builder.shutil, "which", return_value="/usr/bin/rez-next"),
+        ):
+            self.assertEqual(builder._resolve_rez_executable(), Path("/opt/rez-next"))
 
     def test_failure_surfaces_exit_code(self):
         with (

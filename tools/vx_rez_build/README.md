@@ -27,18 +27,27 @@ verification are **not** done here — they remain in
 [`tools/pack_stage.py`](../pack_stage.py), which this wrapper shares with
 `build_bundle.py` so both paths produce byte-identical archives.
 
-## Getting the `rez` binary
+## Getting the `rez-next` binary
 
-The wrapper shells out to the `rez` Rust binary. The PyPI `rez_next` wheel is an
-empty shell: it reports success while never executing `build.py`, and
-`get_buildsys_types()` returns `[]`. Install the binaries instead:
+The wrapper drives the **`rez build` interface implemented by rez-next**, not the
+legacy Python `rez`. Install the Rust binaries:
 
 ```bash
 cargo install rez-next --locked
 ```
 
-This provides both `rez` and `rez-next`. Point the wrapper at a specific binary
-with `--rez-executable` or the `VX_REZ_EXECUTABLE` environment variable.
+This provides both `rez` and `rez-next`, and either works — they are the same
+rez-next implementation. Two things are *not* this interface:
+
+- **The PyPI `rez_next` wheel is an empty shell.** It reports success while never
+  executing `build.py`, and `get_buildsys_types()` returns `[]`. Its Python API
+  (`rez_next.build_`) must not be used; run the binary instead.
+- **A pip-installed legacy `rez` 3.x** also owns the `rez` name. It has no
+  `--build-system` flag, so it would reject the wrapper's invocation.
+
+Resolution order: `--rez-executable` / `$VX_REZ_EXECUTABLE` first, then `rez-next`
+on `PATH`, then `rez` on `PATH`. Pinning `--rez-executable` is recommended so a
+stray legacy `rez` cannot be picked up.
 
 ## Why the wrapper exists
 
