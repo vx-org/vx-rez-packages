@@ -580,6 +580,7 @@ class RemoteBuildProcess(BuildProcessHelper):
 
     This process builds a package's variants sequentially, on remote hosts.
     """
+
     @classmethod
     def name(cls) -> str:
         return "remote"
@@ -695,10 +696,10 @@ Missing capability: **no `pkg[.variant]` / `pkg[1]` request syntax**, and no res
 - Variant URI: canonical form is `<package-uri>[<index>]` (`<SP>/rez/package_resources.py:488-491`):
 
 ```python
-    def _uri(self) -> str:
-        index = self.index
-        idxstr = '' if index is None else str(index)
-        return "%s[%s]" % (self.parent.uri, idxstr)
+def _uri(self) -> str:
+    index = self.index
+    idxstr = "" if index is None else str(index)
+    return "%s[%s]" % (self.parent.uri, idxstr)
 ```
 
   with lookups `get_variant_from_uri` (`rez/packages.py:804`), `get_package_from_uri` (`:757`), `get_variant` (`:735`), `Package.get_variant(index)` (`:330`).

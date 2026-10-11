@@ -84,7 +84,12 @@ is a **re-export shim** of the native module, not a discovery mechanism:
 
 ```python
 from ._native.test import (  # type: ignore[import]
-    ERROR, FAILED, SKIPPED, SUCCESS, PackageTestResults, PackageTestRunner,
+    ERROR,
+    FAILED,
+    SKIPPED,
+    SUCCESS,
+    PackageTestResults,
+    PackageTestRunner,
 )
 ```
 
@@ -283,14 +288,10 @@ for (test_name, command_str) in &package.tests {
 
 **rez spec side:** `src/rez/package_test.py:27-51` (docstring) and `:542-584` (`_get_test_info`):
 ```python
-   tests = {
-       "unit": "python -m unittest -s {root}/tests",
-       "CI": {
-           "command": "python {root}/ci_tests/main.py",
-           "requires": ["maya-2017"],
-           "replace": True
-       }
-   }
+tests = {
+    "unit": "python -m unittest -s {root}/tests",
+    "CI": {"command": "python {root}/ci_tests/main.py", "requires": ["maya-2017"], "replace": True},
+}
 ```
 ```python
     test_entry = tests_dict.get(test_name)
@@ -357,8 +358,9 @@ and rolls back on failure.
   ```python
   # run any tests that are configured to run pre-install
   try:
-      self._run_tests(variant, run_on=["pre_release"],
-                      package_install_path=build_result["package_install_path"])
+      self._run_tests(
+          variant, run_on=["pre_release"], package_install_path=build_result["package_install_path"]
+      )
   except PackageTestError:
       # delete the installed variant payload
       self._rmtree(build_result["variant_install_path"])
@@ -845,6 +847,7 @@ fn release_tag_name(package: &Package) -> String {
 ```python
 tag_format = "v{version}"
 from rez_next import config as cfg
+
 try:
     cfg_tag = cfg.get("plugins.release_vcs.tag_name", None)
     if cfg_tag:
@@ -1072,8 +1075,11 @@ schema at `:935`) but no Rust CLI reads it, and there is no `$EDITOR` prompt imp
 **rez spec side:** `src/rez/cli/release.py:39-41`
 ```python
 parser.add_argument(
-    "--no-message", dest="no_message", action="store_true",
-    help="do not prompt for release message.")
+    "--no-message",
+    dest="no_message",
+    action="store_true",
+    help="do not prompt for release message.",
+)
 ```
 with the editor-prompt workflow at `src/rez/cli/release.py:86-139` (opens
 `config.editor` on a `rez-release-message-<sha1>.txt` temp file, strips the changelog section

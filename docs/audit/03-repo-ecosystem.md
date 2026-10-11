@@ -130,7 +130,7 @@ and defaults to `filesystem`; `src/rez/package_repository.py:549-586`:
 ```python
 def get_repository(self, path: str) -> PackageRepository:
     # normalise repo path
-    parts = path.split('@', 1)
+    parts = path.split("@", 1)
     if len(parts) == 1:
         parts = ("filesystem", parts[0])
     repo_type, location = parts

@@ -28,12 +28,13 @@ Two separable requirements hide inside that:
 ```python
 package_release_keys = (
     "timestamp",
-    'revision',
-    'changelog',
-    'release_message',
-    'previous_version',
-    'previous_revision',
-    'vcs')
+    "revision",
+    "changelog",
+    "release_message",
+    "previous_version",
+    "previous_revision",
+    "vcs",
+)
 ```
 
 There is no `built_by`, `build_user`, `build_host` or `build_time` — a grep for

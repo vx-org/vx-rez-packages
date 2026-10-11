@@ -54,8 +54,16 @@ The `make` stub is a factual finding worth flagging to any re-specification:
 
 ```python
 # src/rezplugins/build_system/make.py:21-24
-def __init__(self, working_dir, opts=None, package=None, write_build_scripts: bool = False,
-             verbose: bool = False, build_args=[], child_build_args=[]) -> None:
+def __init__(
+    self,
+    working_dir,
+    opts=None,
+    package=None,
+    write_build_scripts: bool = False,
+    verbose: bool = False,
+    build_args=[],
+    child_build_args=[],
+) -> None:
     super(MakeBuildSystem, self).__init__(working_dir)
     raise NotImplementedError
 ```
@@ -118,7 +126,7 @@ if package:
 
     # package explicitly specifies build system
     if buildsys_name:
-        cls = plugin_manager.get_plugin_class('build_system', buildsys_name)
+        cls = plugin_manager.get_plugin_class("build_system", buildsys_name)
         return [cls]
 ```
 
@@ -324,7 +332,8 @@ Assignment loop: `src/rez/build_system.py:301-303`. Every value is wrapped in `r
 
 ```python
 class BuildType(Enum):
-    """ Enum to represent the type of build."""
+    """Enum to represent the type of build."""
+
     local = 0
     central = 1
 ```
@@ -372,10 +381,12 @@ a config setting (§A.9).
 ```python
 # src/rez/package_resources.py:178-182
 package_schema_dict = package_base_schema_dict.copy()
-package_schema_dict.update({
-    # deliberately not possible to late bind
-    Optional("variants"):               [[PackageRequest]]
-})
+package_schema_dict.update(
+    {
+        # deliberately not possible to late bind
+        Optional("variants"): [[PackageRequest]]
+    }
+)
 ```
 
 i.e. `list[list[PackageRequest]]`. Equivalent POD entry: `src/rez/package_resources.py:230-231`
@@ -388,9 +399,7 @@ the parent package's `requires` plus the variant's own entry:
 
 ```python
 # src/rez/packages.py:429-431
-return (
-    (self.parent.requires or []) + self.variant_requires
-)
+return (self.parent.requires or []) + self.variant_requires
 ```
 
 `variant.index` is `None` for a package with no variants (`src/rez/packages.py:433-452` region;
@@ -410,7 +419,7 @@ def _subpath(self, ignore_shortlinks: bool = False) -> str | None:
         vars_str = str(list(map(str, self.variant_requires)))
         h = sha1(vars_str.encode("utf8"))
         hashdir = h.hexdigest()
-        ...                      # shortlink lookup, :502-515
+        ...  # shortlink lookup, :502-515
         return hashdir
     else:
         dirs = [x.safe_str() for x in self.variant_requires]
@@ -438,8 +447,8 @@ string shape — it is an emergent consequence of convention (1) plus packages n
 
 ```python
 variants = [
-   ["platform-linux", "arch-x86_64", "os-Ubuntu-12.04"],
-   ["platform-linux", "arch-x86_64", "os-Ubuntu-16.04"]
+    ["platform-linux", "arch-x86_64", "os-Ubuntu-12.04"],
+    ["platform-linux", "arch-x86_64", "os-Ubuntu-16.04"],
 ]
 ```
 
@@ -546,8 +555,7 @@ The **build environment** is resolved with all three enabled:
 
 ```python
 # src/rez/build_process.py:259-260
-request = variant.get_requires(build_requires=True,
-                               private_build_requires=True)
+request = variant.get_requires(build_requires=True, private_build_requires=True)
 ```
 
 So `build_requires` and `private_build_requires` are present in the build context (and thus in
@@ -566,7 +574,7 @@ package_build_only_keys = (
     "build_system",
     "build_command",
     "preprocess",
-    "pre_build_commands"
+    "pre_build_commands",
 )
 ```
 
@@ -718,6 +726,7 @@ class RemoteBuildProcess(BuildProcessHelper):
 
     This process builds a package's variants sequentially, on remote hosts.
     """
+
     @classmethod
     def name(cls) -> str:
         return "remote"
@@ -882,9 +891,7 @@ is either a command string, a command list, or a dict with a `"command"` key —
 ```python
 # src/rez/package_test.py:549-552
 if not isinstance(test_entry, dict):
-    test_entry = {
-        "command": test_entry
-    }
+    test_entry = {"command": test_entry}
 ```
 
 The only *function-shaped* hook is the rex attribute **`pre_test_commands`**, which is a
@@ -914,13 +921,12 @@ retcode, _, _ = context.execute_shell(
     actions_callback=_pre_test_commands,
     stdout=self.stdout,
     stderr=self.stderr,
-    block=True
+    block=True,
 )
 
 if retcode:
     print_warning("Test command exited with code %d", retcode)
-    self._add_test_result(test_name, variant, "failed",
-                          "Test failed with exit code %d" % retcode)
+    self._add_test_result(test_name, variant, "failed", "Test failed with exit code %d" % retcode)
     if not exitcode:
         exitcode = retcode
     if self.stop_on_fail:
@@ -960,27 +966,27 @@ if retcode:
 `tests_schema` — `src/rez/package_resources.py:101-121`:
 
 ```python
-tests_schema = Schema({
-    Optional(str): Or(
-        Or(str, [str]),
-        extensible_schema_dict({
-            "command": Or(str, [str]),
-            Optional("requires"): [
-                Or(PackageRequest, And(str, Use(PackageRequest)))
-            ],
-            Optional("run_on"): Or(str, [str]),
-            Optional("on_variants"): Or(
-                bool,
+tests_schema = Schema(
+    {
+        Optional(str): Or(
+            Or(str, [str]),
+            extensible_schema_dict(
                 {
-                    "type": "requires",
-                    "value": [
-                        Or(PackageRequest, And(str, Use(PackageRequest)))
-                    ]
+                    "command": Or(str, [str]),
+                    Optional("requires"): [Or(PackageRequest, And(str, Use(PackageRequest)))],
+                    Optional("run_on"): Or(str, [str]),
+                    Optional("on_variants"): Or(
+                        bool,
+                        {
+                            "type": "requires",
+                            "value": [Or(PackageRequest, And(str, Use(PackageRequest)))],
+                        },
+                    ),
                 }
-            )
-        })
-    )
-})
+            ),
+        )
+    }
+)
 ```
 
 Attached to the package/variant schema as `Optional('tests'): late_bound(tests_schema)` —
@@ -1020,10 +1026,9 @@ Failure handling — install/release is aborted and the payload removed:
 ```python
 # src/rezplugins/build_process/local.py:514-519
 if runner.num_failed:
-    print('')
+    print("")
     raise PackageTestError(
-        "%d tests failed; the installation has been cancelled"
-        % runner.num_failed
+        "%d tests failed; the installation has been cancelled" % runner.num_failed
     )
 ```
 
@@ -1264,7 +1269,8 @@ if release_settings.check_tag and not self.ignore_existing_tag:
         raise ReleaseError(
             "Cannot release - the current package version '%s' is "
             "already tagged in the repository. Use --ignore-existing-tag "
-            "to force the release" % self.package.version)
+            "to force the release" % self.package.version
+        )
 ```
 
 `check_tag` defaults to **`False`** — `src/rezplugins/release_vcs/rezconfig.py:42`, with a long
@@ -1368,6 +1374,7 @@ Examples: `AmqpReleaseHook.schema_dict` — `src/rezplugins/release_hook/amqp.py
 ```python
 class ReleaseHookEvent(Enum):
     """Enum to help manage release hooks."""
+
     pre_build = ("pre-build", "build", "pre_build")
     pre_release = ("pre-release", "release", "pre_release")
     post_release = ("post-release", "release", "post_release")
@@ -1542,7 +1549,7 @@ only `|` splitting in the tree is version-range parsing (`src/rez/version/_versi
 ```python
 # src/rez/package_repository.py:562-576
 # normalise repo path
-parts = path.split('@', 1)
+parts = path.split("@", 1)
 if len(parts) == 1:
     parts = ("filesystem", parts[0])
 
@@ -1616,12 +1623,16 @@ Rule parsing — `Rule.parse_rule(txt)` (`:363-401`):
 ```python
 # src/rez/package_filter.py:375-394
 types: dict[str, type[Rule]] = {
-    "glob": GlobRule, "regex": RegexRule, "range": RangeRule,
-    "before": TimestampRule, "after": TimestampRule}
+    "glob": GlobRule,
+    "regex": RegexRule,
+    "range": RangeRule,
+    "before": TimestampRule,
+    "after": TimestampRule,
+}
 
 label, txt = Rule._parse_label(txt)
 if label is None:
-    if '*' in txt:
+    if "*" in txt:
         label = "glob"
     else:
         label = "range"
@@ -2354,7 +2365,7 @@ Optional("preprocess"):             _function_schema,
    `example_packages/hello_world/package.py:24`:
 
 ```python
-build_command = 'python {root}/build.py {install}'
+build_command = "python {root}/build.py {install}"
 ```
 
    and `example_packages/hello_world/build.py` copies already-built `bin/` and `python/` trees into
@@ -2362,12 +2373,12 @@ build_command = 'python {root}/build.py {install}'
 
 ```python
 # example_packages/hello_world/build.py:52-58
-if __name__ == '__main__':
+if __name__ == "__main__":
     build(
-        source_path=os.environ['REZ_BUILD_SOURCE_PATH'],
-        build_path=os.environ['REZ_BUILD_PATH'],
-        install_path=os.environ['REZ_BUILD_INSTALL_PATH'],
-        targets=sys.argv[1:]
+        source_path=os.environ["REZ_BUILD_SOURCE_PATH"],
+        build_path=os.environ["REZ_BUILD_PATH"],
+        install_path=os.environ["REZ_BUILD_INSTALL_PATH"],
+        targets=sys.argv[1:],
     )
 ```
 
