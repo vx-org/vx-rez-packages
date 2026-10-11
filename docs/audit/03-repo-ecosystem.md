@@ -5,7 +5,7 @@
 
 | Item | Value |
 |---|---|
-| rez-next checkout | `P:/monica/pipeline-b65688e9ec3c/pip-4608-d4ed6015473b/worktree/rez-next` |
+| rez-next checkout | `vx-org/rez-next`, read-only working copy |
 | rez-next HEAD | `97eef03928012d540f45d25fa82553da123e8786` (`97eef03`, 2026-10-11) |
 | rez-next version | `0.3.10` (`.release-please-manifest.json`) |
 | Upstream Rez reference | `nerdvegas/rez` @ `f622b817ef63` (2026-10-05), branch `main` |

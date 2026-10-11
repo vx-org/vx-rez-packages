@@ -7,7 +7,7 @@ Scope: rez-next's **build** dimension (build_system plugin family, plugin regist
 | Side | Artifact | Identifier |
 |---|---|---|
 | rez-next | git checkout under `rez-next/` | commit `97eef03928012d540f45d25fa82553da123e8786` (2026-10-10), release `0.3.10` (`.release-please-manifest.json`) |
-| upstream Rez | local installation | `rez 3.4.0` at `C:\Users\hallong\AppData\Local\Programs\Python\Python312\Lib\site-packages\rez` + `rezplugins` (same wheel) |
+| upstream Rez | local installation | `rez 3.4.0` installed from PyPI (`rez` + `rezplugins`, same wheel); version confirmed at `rez/utils/_version.py:5` |
 | upstream Rez | source cross-check | `https://github.com/AcademySoftwareFoundation/rez` (default branch `main`) — `nerdvegas/rez` now redirects here and uses a `src/` layout |
 
 Commands that produced upstream evidence (all read-only):

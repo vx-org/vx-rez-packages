@@ -3,9 +3,10 @@
 **Purpose.** Normative reference of what upstream Rez *specifies*, so that other auditors can
 compare a re-specification (e.g. `rez-next`) against it dimension by dimension.
 
-**Source of truth.** Shallow clone of upstream Rez at
-`P:/monica/pipeline-b65688e9ec3c/pip-4608-d4ed6015473b/worktree/.audit-tmp/upstream-rez`,
-commit `f622b81`, version confirmed at `src/rez/utils/_version.py:6` (`_rez_version = "3.4.0"`).
+**Source of truth.** A read-only shallow clone of upstream Rez
+(`AcademySoftwareFoundation/rez`, branch `main`) at commit `f622b81`, version confirmed at
+`src/rez/utils/_version.py:6` (`_rez_version = "3.4.0"`). The clone was a scratch working copy
+and is not part of this repository.
 
 **Citation discipline.** Every claim below carries a `src/...:LINE` (or `docs/...:LINE`) reference
 to a file that was opened and read at that line. Where a concept is genuinely *not* in Rez, the
