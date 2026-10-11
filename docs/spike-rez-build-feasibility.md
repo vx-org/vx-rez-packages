@@ -239,6 +239,11 @@ the CLI, not a package.)
    repository `vx-org/vx-rez-build`, command `vx-rez-build`, delegating to
    `rez build`. Revisit a `vx` extension subcommand later — `rez-next` ships a
    `vx-extension.toml`, so that route exists.
+
+   Sequencing does not have to wait for that decision. The wrapper is small
+   enough to land first as `tools/vx_rez_build/` inside this repository, where
+   the existing `tooling-ref` pin already gives consumers an immutable reference.
+   Extract it to its own repository once the name is settled.
 2. **`red build`.** This spike read the request as **rez / rez-next**. If `RED` is
    a separate internal platform, the encapsulation target and the naming both
    change and this document is void.
