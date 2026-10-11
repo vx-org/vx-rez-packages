@@ -67,9 +67,10 @@ with `runpy.run_path(script, run_name="__main__")`. So:
   ```python
   from rez_next.build_plugins import BuildPlugin
 
+
   class Build(BuildPlugin):
-      def install(self) -> None:
-          ...
+      def install(self) -> None: ...
+
 
   if __name__ == "__main__":
       Build().run()
