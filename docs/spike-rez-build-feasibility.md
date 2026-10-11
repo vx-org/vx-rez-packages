@@ -185,18 +185,39 @@ It accepts only `.zip`, `.whl`, `.tar.gz`, `.tgz`.
 
 ## Gap register
 
-| # | Gap | Evidence | Impact | Fix where |
-| - | --- | -------- | ------ | --------- |
-| G1 | Python build API inert; no CLI dispatch | `build_package()` returns success leaving an empty dir | wrapper must shell out to the Rust binary | upstream issue; local ships/pins a binary |
-| G2 | `binary_archive` accepts only zip/tar.gz/tgz | `systems/binary_archive.rs`, `extract_archive()` | `python` 3.7.9 recipe is `tar.zst` | upstream: add zstd; local: extract inside `build.py` |
-| G3 | No determinism primitives: no `SOURCE_DATE_EPOCH`, no mtime/mode/uid normalisation, no sorted entries, no `tar.zst` output, no `sha256sums.txt` / `manifest.json` / `provenance.json` | no hits for any of these in the build crate | `rez build` cannot produce the published `.rez.tar.zst` | local — VX's own contract, keep the pack stage |
-| G4 | `REZ_BUILD_TARGET_*` never set; defaults to host | observed `null`, `target_arch: amd64` | cross-target builds silently target the host | local: wrapper sets them; upstream: set them |
-| G5 | Plain build path never copies `package.py` | variant root contained only `payload/` | package would ship without its definition | local: wrapper copies it |
-| G6 | Child env cleared; **`PATH` not restored** | observed `"PATH": null` | `build.py` cannot shell out | local: wrapper defines an explicit env contract |
-| G7 | `custom` marshals exit code only | observed | missing payload is a silent success | local: pack stage asserts a non-empty payload |
-| G8 | `create_build_system("custom")` degrades to copy-only | `lib.rs` | a plausible-looking `package.py` silently no-ops | local: contract forbids the literal, test asserts it |
-| G9 | `build.py` runs from a temp copy; `source_path` is that temp dir | observed `cwd`/`__file__` | `build.py` cannot find `recipe.json` relatively | local: wrapper passes an absolute recipe path |
-| G10 | Host arch reported as `amd64`, family is `arch-x86_64` | observed | wrong variant subpath if mapped naively | local: explicit arch translation table |
+| # | Gap | Evidence | Impact | Fix where | Upstream |
+| - | --- | -------- | ------ | --------- | -------- |
+| G1 | Python build API inert; no CLI dispatch | `build_package()` returns success leaving an empty dir | wrapper must shell out to the Rust binary | local ships/pins a binary; upstream decides fix-or-document | [rez-next#319](https://github.com/vx-org/rez-next/issues/319) |
+| G2 | `binary_archive` accepts only zip/tar.gz/tgz | `systems/binary_archive.rs`, `extract_archive()` | `python` 3.7.9 recipe is `tar.zst` | upstream: add zstd; local: extract inside `build.py` until then | [rez-next#320](https://github.com/vx-org/rez-next/issues/320) |
+| G3 | No determinism primitives: no `SOURCE_DATE_EPOCH`, no mtime/mode/uid normalisation, no sorted entries, no `tar.zst` output, no `sha256sums.txt` / `manifest.json` / `provenance.json` | no hits for any of these in the build crate | `rez build` cannot produce the published `.rez.tar.zst` | local — VX's own contract, keep the pack stage | not filed — out of upstream scope |
+| G4 | `REZ_BUILD_TARGET_*` never set; defaults to host | observed `null`, `target_arch: amd64` | cross-target builds silently target the host | local: wrapper sets them; upstream: set them or document the contract | [rez-next#321](https://github.com/vx-org/rez-next/issues/321) |
+| G5 | Plain build path never copies `package.py` | variant root contained only `payload/` | package would ship without its definition | local: wrapper copies it; upstream: confirm the convention | [rez-next#322](https://github.com/vx-org/rez-next/issues/322) |
+| G6 | Child env cleared; **`PATH` not restored** | observed `"PATH": null` | `build.py` cannot shell out | local: wrapper defines an explicit env contract | not filed — local contract |
+| G7 | `custom` marshals exit code only | observed | missing payload is a silent success | local: pack stage asserts a non-empty payload | not filed — local contract |
+| G8 | `create_build_system("custom")` degrades to copy-only | `lib.rs` | a plausible-looking `package.py` silently no-ops | local: contract forbids the literal, test asserts it | [rez-next#323](https://github.com/vx-org/rez-next/issues/323) |
+| G9 | `build.py` runs from a temp copy; `source_path` is that temp dir | observed `cwd`/`__file__` | `build.py` cannot find `recipe.json` relatively | local: wrapper passes an absolute recipe path | not filed — local contract |
+| G10 | Host arch reported as `amd64`, family is `arch-x86_64` | observed | wrong variant subpath if mapped naively | local: explicit arch translation table | [rez-next#324](https://github.com/vx-org/rez-next/issues/324) |
+
+### Upstream disposition
+
+Six gaps were filed against `vx-org/rez-next` in October 2026 (G1, G2, G4, G5, G8,
+G10). Four were deliberately **not** filed, because they are VX's own contract
+rather than an upstream defect:
+
+- **G3** — determinism primitives, `sha256sums.txt`, `manifest.json` and
+  `provenance.json` are VX's published schema-v1 contract. Asking upstream to
+  adopt our artifact format is out of scope; the pack stage stays local.
+- **G6**, **G9** — the cleared child environment and the temp-build-cache working
+  directory are observable upstream behaviour that a wrapper can fully absorb.
+  Filing them would ask upstream to change a deliberate design for our
+  convenience.
+- **G7** — exit-code-only marshalling is a reasonable upstream default; asserting
+  a non-empty payload is our release gate, not a build-system duty.
+
+Every filed gap has a working local compensation today, so none of them blocks
+the pilot. The pilot's dependency on upstream is limited to **G2**: the `python`
+recipe is `tar.zst`, so that package needs either upstream zstd support or the
+local in-`build.py` extraction. The `witr` pilot avoids G2 entirely.
 
 ## Recommendation
 
@@ -247,8 +268,13 @@ the CLI, not a package.)
 2. **`red build`.** This spike read the request as **rez / rez-next**. If `RED` is
    a separate internal platform, the encapsulation target and the naming both
    change and this document is void.
-3. **Upstream vs local for G2 and G4.** Both are small upstream asks. The
-   preferred order is upstream issue first, local compensation only if blocked.
+3. **Upstream vs local for G2 and G4 — resolved: upstream issue first, local
+   compensation ships now.** Both were filed upstream ([#320](https://github.com/vx-org/rez-next/issues/320),
+   [#321](https://github.com/vx-org/rez-next/issues/321)) and neither blocks the
+   pilot, because the local compensation already exists in both cases. Revisit
+   only if upstream answers: adopting upstream zstd support lets the `python`
+   recipe drop its in-`build.py` extraction, and upstream-set target variables
+   let the wrapper drop its environment injection.
 4. **How CI obtains the `rez` binary.** `cargo install rez-next --locked` works
    but is slow. Options: a pinned prebuilt binary asset, or a cached cargo
    install in the reusable workflow.
