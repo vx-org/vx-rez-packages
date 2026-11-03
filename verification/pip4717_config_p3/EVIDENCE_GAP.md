@@ -36,10 +36,11 @@ identical contents, swapped trees and rez-next's own same-side `rezconfig.py`.
 `run_real_keyset_comparison.py` exits `1`;
 `test_strict_bidirectional_keyset_equality` is an explicit expected failure.
 
-No key was deleted from either source to force a pass (both SHA-256 values are
-pinned over LF-normalized bytes, with the CRLF-rendered form pinned too, and
-checked), and no source was reused for both sides. The six keys and
-their per-key compatibility policy are documented in
+No key was deleted from either source to force a pass. Each source's SHA-256 is
+pinned twice — over LF-normalized bytes and as the CRLF-rendered form — so four
+pins in total are checked by `TestVendoredSourcesAreUnmodified`, and each pin
+has its own mutation in `mutation_checks.py`. No source was reused for either
+side. The six keys and their per-key compatibility policy are documented in
 `KEYSET_COMPATIBILITY.md`. Any new drift in either direction makes the
 divergence test fail, which is the registry-addition guard.
 

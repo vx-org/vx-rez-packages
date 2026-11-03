@@ -43,11 +43,12 @@ the assertion genuinely fails; `run_real_keyset_comparison.py` exits `1`.
 
 The six keys are **not removed from either source** to manufacture equality.
 Their full SHA-256 is pinned in `keyset_invariant.py` — over LF-normalized
-bytes, with the CRLF-rendered digest pinned as a second convention — and
-checked by `TestVendoredSourcesAreUnmodified`, so deleting a key (or injecting
-a key) turns the suite red regardless of checkout EOL. Any *new* key on either
-side also turns the divergence test red, which is the "registry key added
-without schema registration" guard.
+bytes, with the CRLF-rendered digest pinned as a second convention — checked by
+`TestVendoredSourcesAreUnmodified` and each of the four pins by its own mutation
+in `mutation_checks.py`, so deleting a key (or injecting a key) turns the suite
+red regardless of checkout EOL. Any *new* key on either side also turns the
+divergence test red, which is the "registry key added without schema
+registration" guard.
 
 | Key | Upstream rez 3.4.0 evidence | rez-next side | Policy |
 | --- | --- | --- | --- |

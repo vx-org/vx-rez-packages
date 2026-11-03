@@ -176,11 +176,32 @@ MUTATIONS = (
         "test_keyset_invariant.TestRealBidirectionalComparison.test_real_comparison_documents_the_six_key_divergence",
     ),
     Mutation(
-        "B upstream source hash pin tampered",
+        "B reference LF source hash pin tampered",
         "keyset_invariant.py",
         '"0bf79731e179ca0815b5364ffd810e23dbe7c974f2fd2aca78a0742b15778599"',
         '"0000000000000000000000000000000000000000000000000000000000000000"',
         "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_reference_source_hash_is_pinned",
+    ),
+    Mutation(
+        "B schema LF source hash pin tampered",
+        "keyset_invariant.py",
+        '"eb812d59fed0f05d78862d6bc3f93cf58b1cd306708665f9304940fcbc23fb75"',
+        '"0000000000000000000000000000000000000000000000000000000000000000"',
+        "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_schema_source_hash_is_pinned",
+    ),
+    Mutation(
+        "B reference CRLF source hash pin tampered",
+        "keyset_invariant.py",
+        '"c634be4d326be7cf41d1545e3b00b0495074281f0e9e09e384ac69b0ba852e05"',
+        '"0000000000000000000000000000000000000000000000000000000000000000"',
+        "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_reference_source_hash_is_pinned",
+    ),
+    Mutation(
+        "B schema CRLF source hash pin tampered",
+        "keyset_invariant.py",
+        '"be12a3bd138cd021278d2ff48b45ea445a8fbc9da957da5a1abfc78f7c170c7b"',
+        '"0000000000000000000000000000000000000000000000000000000000000000"',
+        "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_schema_source_hash_is_pinned",
     ),
 )
 

@@ -123,13 +123,15 @@ regenerates that file byte-for-byte from the pristine snapshot.
 | `cargo test --offline` (real Rust production source) | 81 passed, 0 failed |
 | `python -I run_real_keyset_comparison.py` | exits **1**, 146 reference keys / 140 schema keys / 6 `missing_in_schema` / 0 `missing_in_reference` |
 | `python -m unittest discover -s verification/pip4717_config_p3 -v` | 26 tests, OK (expected failures=1) |
-| `python mutation_checks.py` | 25 baseline tests green, strict equality expected-failure, real comparison honest FAIL, 15/15 Python mutations killed |
+| `python mutation_checks.py` | 25 baseline tests green, strict equality expected-failure, real comparison honest FAIL, 18/18 Python mutations killed |
 | `python rust_mutation_checks.py` | full 81-test suite green, 9 named tests green, 8/8 real-Rust mutations killed and restored green |
 | `python -m pytest -q tests` (repository suite) | 99 passed, 209 subtests passed |
 | `ruff check` / `ruff format --check` (harness-owned Python) | clean |
 
 The strict-equality `unittest.expectedFailure` is deliberate: deleting the six
 keys or reusing one source for both sides would turn it into an *unexpected
-success*, which unittest reports as a failure. Both source SHA-256 values are
-pinned over LF-normalized bytes (with the CRLF-rendered digest pinned too), so
-key removal or injection is caught directly on any checkout.
+success*, which unittest reports as a failure. Both sources are pinned over
+LF-normalized bytes with the CRLF-rendered digest as a second convention (four
+pins in total); each is checked by a hash test and has its own mutation in
+`mutation_checks.py`, so key removal or injection is caught directly on any
+checkout.
