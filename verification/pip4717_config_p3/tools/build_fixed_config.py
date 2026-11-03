@@ -3,7 +3,7 @@
 The PIP-4717 A findings concern the real Rust implementation in rez-next
 ``crates/rez-next-common/src/config.rs``. This script applies exactly those
 four source fixes to a verbatim copy of that file at rez-next head
-``240500672ec42c916aab3a8ae3a638c6e2d4302`` (the #380 merged head). Every
+``240500672ec42c916aab35a8ae3a638c6e2d4302`` (the #380 merged head). Every
 replacement is asserted to match exactly once, so a drift in the upstream
 snapshot turns this into a hard failure instead of a silent partial patch.
 

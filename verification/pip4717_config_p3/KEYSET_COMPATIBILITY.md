@@ -5,10 +5,10 @@
 
 ## Sources (independent, vendored read-only)
 
-| Side | File | SHA-256 prefix | Keys | Origin |
+| Side | File | SHA-256 prefix (LF-normalized) | Keys | Origin |
 | --- | --- | --- | --- | --- |
-| Reference | `upstream/rez-3.4.0/src/rez/rezconfig.py` | `c634be4d326b` | 146 | upstream rez 3.4.0 (`src/rez/utils/_version.py`) |
-| Schema | `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` (`config_schema`) | `be12a3bd138c` | 140 | rez-next #380 head `2405006` |
+| Reference | `upstream/rez-3.4.0/src/rez/rezconfig.py` | `0bf79731e179` | 146 | upstream rez 3.4.0 (`src/rez/utils/_version.py`) |
+| Schema | `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` (`config_schema`) | `eb812d59fed0` | 140 | rez-next #380 head `2405006` |
 
 Both are pre-existing local files in this workspace. Reading them needs no
 network, installation or new credentials. They come from two different
@@ -16,6 +16,11 @@ trees, are byte-different, and are AST-extracted independently (top-level
 `Name` assignments vs. the `config_schema` dict literal). Pointing both
 inputs at one file, or using rez-next's own `rezconfig.py` compatibility
 module as the reference, is rejected by `assert_independent_sources()`.
+
+The repo commits LF blobs (`.gitattributes`: `* text=auto eol=lf`), so these
+prefixes are the LF-normalized digests. `keyset_invariant.py` pins both the
+LF-normalized and the CRLF-rendered form of each source and hashes
+EOL-normalized bytes, so the pin is independent of the checkout's line endings.
 
 ## Actual result
 
@@ -37,10 +42,12 @@ the assertion genuinely fails; `run_real_keyset_comparison.py` exits `1`.
 ## Per-key compatibility policy
 
 The six keys are **not removed from either source** to manufacture equality.
-Their full SHA-256 is pinned in `keyset_invariant.py` and checked by
-`TestVendoredSourcesAreUnmodified`, so deleting a key (or injecting a key)
-turns the suite red. Any *new* key on either side also turns the divergence
-test red, which is the "registry key added without schema registration" guard.
+Their full SHA-256 is pinned in `keyset_invariant.py` — over LF-normalized
+bytes, with the CRLF-rendered digest pinned as a second convention — and
+checked by `TestVendoredSourcesAreUnmodified`, so deleting a key (or injecting
+a key) turns the suite red regardless of checkout EOL. Any *new* key on either
+side also turns the divergence test red, which is the "registry key added
+without schema registration" guard.
 
 | Key | Upstream rez 3.4.0 evidence | rez-next side | Policy |
 | --- | --- | --- | --- |

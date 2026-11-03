@@ -98,15 +98,28 @@ class TestSourceIndependence(unittest.TestCase):
 class TestVendoredSourcesAreUnmodified(unittest.TestCase):
     """Pin both source hashes: no key was deleted or injected to force a pass."""
 
-    @staticmethod
-    def _sha256(path: Path) -> str:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+    def _assert_forms_pinned(self, path: Path, lf_pin: str, crlf_pin: str) -> None:
+        normalized = ki.normalize_line_endings(path.read_bytes())
+        # Primary pin: EOL-normalized (LF) digest, independent of checkout EOL.
+        self.assertEqual(ki.source_sha256(path), lf_pin)
+        self.assertEqual(hashlib.sha256(normalized).hexdigest(), lf_pin)
+        # Second pinned convention: the CRLF-rendered digest from the first delivery.
+        self.assertEqual(hashlib.sha256(ki.crlf_line_endings(normalized)).hexdigest(), crlf_pin)
+        # Platform proof: a CRLF copy normalizes back to the same primary pin.
+        with tempfile.TemporaryDirectory() as tmp:
+            crlf_copy = Path(tmp) / "source.py"
+            crlf_copy.write_bytes(ki.crlf_line_endings(normalized))
+            self.assertEqual(ki.source_sha256(crlf_copy), lf_pin)
 
     def test_reference_source_hash_is_pinned(self):
-        self.assertEqual(self._sha256(ki.REFERENCE_SOURCE), ki.REFERENCE_SOURCE_SHA256)
+        self._assert_forms_pinned(
+            ki.REFERENCE_SOURCE, ki.REFERENCE_SOURCE_SHA256, ki.REFERENCE_SOURCE_CRLF_SHA256
+        )
 
     def test_schema_source_hash_is_pinned(self):
-        self.assertEqual(self._sha256(ki.SCHEMA_SOURCE), ki.SCHEMA_SOURCE_SHA256)
+        self._assert_forms_pinned(
+            ki.SCHEMA_SOURCE, ki.SCHEMA_SOURCE_SHA256, ki.SCHEMA_SOURCE_CRLF_SHA256
+        )
 
     def test_no_keys_were_deleted_from_either_source(self):
         sources = ki.load_real_key_sources()

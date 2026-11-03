@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import dataclasses
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -51,10 +52,32 @@ KNOWN_DIVERGENCE: tuple[str, ...] = (
     "warn_old_commands",
 )
 
-# SHA-256 of the vendored authoritative sources. Pinning these proves that no
-# key was removed from, or injected into, either source to manufacture equality.
-REFERENCE_SOURCE_SHA256 = "c634be4d326be7cf41d1545e3b00b0495074281f0e9e09e384ac69b0ba852e05"
-SCHEMA_SOURCE_SHA256 = "be12a3bd138cd021278d2ff48b45ea445a8fbc9da957da5a1abfc78f7c170c7b"
+# SHA-256 of the two vendored authoritative sources. The repo commits LF blobs
+# (``.gitattributes``: ``* text=auto eol=lf``); the first delivery pinned the
+# CRLF-rendered digests by mistake, so both hash tests failed on a normal
+# checkout. Hash EOL-normalized bytes (the LF form) as the primary pin and keep
+# the CRLF-rendered digest as a second pin, so both conventions are explicit and
+# the check is independent of the checkout's line endings. Pinning these proves
+# no key was removed from, or injected into, either source to manufacture equality.
+REFERENCE_SOURCE_SHA256 = "0bf79731e179ca0815b5364ffd810e23dbe7c974f2fd2aca78a0742b15778599"
+SCHEMA_SOURCE_SHA256 = "eb812d59fed0f05d78862d6bc3f93cf58b1cd306708665f9304940fcbc23fb75"
+REFERENCE_SOURCE_CRLF_SHA256 = "c634be4d326be7cf41d1545e3b00b0495074281f0e9e09e384ac69b0ba852e05"
+SCHEMA_SOURCE_CRLF_SHA256 = "be12a3bd138cd021278d2ff48b45ea445a8fbc9da957da5a1abfc78f7c170c7b"
+
+
+def normalize_line_endings(data: bytes) -> bytes:
+    """Collapse CRLF/CR to LF so a content hash is EOL-independent."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
+def crlf_line_endings(data: bytes) -> bytes:
+    """Render LF-normalized bytes as CRLF (the second pinned convention)."""
+    return normalize_line_endings(data).replace(b"\n", b"\r\n")
+
+
+def source_sha256(path: Path) -> str:
+    """EOL-normalized SHA-256 of a vendored source file."""
+    return hashlib.sha256(normalize_line_endings(Path(path).read_bytes())).hexdigest()
 
 
 class SourceIndependenceError(ValueError):

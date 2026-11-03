@@ -178,7 +178,7 @@ MUTATIONS = (
     Mutation(
         "B upstream source hash pin tampered",
         "keyset_invariant.py",
-        '"c634be4d326be7cf41d1545e3b00b0495074281f0e9e09e384ac69b0ba852e05"',
+        '"0bf79731e179ca0815b5364ffd810e23dbe7c974f2fd2aca78a0742b15778599"',
         '"0000000000000000000000000000000000000000000000000000000000000000"',
         "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_reference_source_hash_is_pinned",
     ),

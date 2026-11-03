@@ -10,7 +10,7 @@ corrected here.
 
 - **A is now landed in the real Rust source.** `crates/rez-next-common/src/
   config.rs` is a verbatim copy of the production file at rez-next head
-  `240500672ec42c916aab3a8ae3a638c6e2d4302` (#380 merged head) with **only** the
+  `240500672ec42c916aab35a8ae3a638c6e2d4302` (#380 merged head) with **only** the
   four P3 source fixes applied. `upstream/rez-next@2405006/.../config.rs` holds
   the unmodified pristine copy; `config_p3_fix.patch` is the unified diff with
   the real repo-relative paths and can be applied directly to a rez-next
@@ -33,11 +33,18 @@ secondary cross-check only, not as acceptance evidence.
 
 ## Source provenance
 
-| File | Origin | SHA-256 prefix |
+| File | Origin | SHA-256 prefix (LF-normalized) |
 | --- | --- | --- |
-| `upstream/rez-next@2405006/crates/rez-next-common/src/config.rs` | rez-next `2405006` | `91387fba4f92` |
-| `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` | rez-next `2405006` | `be12a3bd138c` |
-| `upstream/rez-3.4.0/src/rez/rezconfig.py` | upstream rez 3.4.0 | `c634be4d326b` |
+| `upstream/rez-next@2405006/crates/rez-next-common/src/config.rs` | rez-next `2405006` | `99cfd07cc5dd` |
+| `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` | rez-next `2405006` | `eb812d59fed0` |
+| `upstream/rez-3.4.0/src/rez/rezconfig.py` | upstream rez 3.4.0 | `0bf79731e179` |
+
+The repo commits these blobs with LF (`.gitattributes`: `* text=auto
+eol=lf`). The first delivery pinned the CRLF-rendered digests, so both
+source-hash tests failed on a normal checkout. `keyset_invariant.py` now
+hashes EOL-normalized bytes (the LF form above) as the primary pin and keeps
+the CRLF-rendered digest as a second pin, so both conventions are explicit and
+the check is platform-independent.
 
 The rez-next `origin/main` (`7dd9410`) copy of `config.rs` is unchanged since
 the #380 head, so all four P3 items were still open; nothing already merged was
@@ -76,8 +83,9 @@ keys from two independent vendored trees. The real comparison produces
 `missing_in_schema` = 6 keys and `missing_in_reference` = empty;
 `keysets_equal()` is `False`. `KEYSET_COMPATIBILITY.md` records the per-key
 compatibility policy. Nothing is deleted, no source is reused, and both source
-hashes are pinned. Source-independence negative cases (same file, identical
-content, same-side `rezconfig.py`, swapped trees) are all covered.
+hashes are pinned in LF- and CRLF-normalized forms. Source-independence
+negative cases (same file, identical content, same-side `rezconfig.py`,
+swapped trees) are all covered.
 
 ## How to run
 
@@ -123,4 +131,5 @@ regenerates that file byte-for-byte from the pristine snapshot.
 The strict-equality `unittest.expectedFailure` is deliberate: deleting the six
 keys or reusing one source for both sides would turn it into an *unexpected
 success*, which unittest reports as a failure. Both source SHA-256 values are
-pinned, so key removal is also caught directly.
+pinned over LF-normalized bytes (with the CRLF-rendered digest pinned too), so
+key removal or injection is caught directly on any checkout.
