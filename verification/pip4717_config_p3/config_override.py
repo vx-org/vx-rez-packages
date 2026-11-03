@@ -1,11 +1,16 @@
-"""Synthetic port of the REZ_* override branches in rez-next's ``config.rs``.
+"""Supplementary synthetic model of the REZ_* override branches.
 
-This module is a deliberately small, behaviour-faithful replica used only by the
-PIP-4717 verification harness. It is NOT the Rust crate: the real implementation
-lives in the rez-next repository, which this task must not copy or edit (isolated
-task directory, synthetic fixtures only, no second writer in the rez-next repo).
-The port reproduces the four error branches named in the review findings so that
-named tests and mutation checks can lock their contracts.
+This is a deliberately small, behaviour-faithful replica kept from the first
+PIP-4717 delivery. It is NOT the production implementation and its tests are
+NOT the acceptance evidence: the authoritative A1-A4 coverage is now locked by
+named Rust tests in ``crates/rez-next-common/src/config.rs`` (a verbatim copy of
+the real rez-next file with only the four P3 fixes) and run with ``cargo test``
+through ``rust_probe/``.
+
+The earlier "synthetic fixtures only" constraint limited test data and isolated
+copies; it never authorised substituting a Python port for the real Rust source.
+This module is retained only as a secondary cross-check and as evidence of the
+prior harness, not as a replacement for the production fix.
 """
 
 from __future__ import annotations

@@ -1,58 +1,50 @@
-# Bidirectional keyset invariant (PIP-4717 B): exact missing evidence
+# Bidirectional keyset invariant (PIP-4717 B): corrected state
 
-**Status: UNVERIFIED. Not passed. Not waived.**
+**Status: EXECUTED. Currently FAILING strict equality. Not skipped, not
+waived, not "only missing input".**
+
+This file replaced the earlier `UNVERIFIED` claim of the first delivery. The
+independent NACK review of `2647505` demonstrated that the authoritative
+sources are already present locally, so the earlier "evidence unavailable"
+statement was incorrect. The filename is kept for continuity; the current
+result and full compatibility policy live in `KEYSET_COMPATIBILITY.md`.
 
 ## Required comparison
 
 `config_schema` key set == rez 3.4.0 `src/rez/rezconfig.py` key set, with both
-directional differences empty (`reference - schema` and `schema - reference`),
-and the test must fail when a key is added to the key registry without being
-registered in the schema.
+directional differences empty, and failing when a key is added to the key
+registry without being registered in the schema.
 
-## What is missing
+## What is actually available
 
-The **independent authoritative rez 3.4.0 `src/rez/rezconfig.py` complete key
-list** is not present in this task environment. Specifically:
+| Side | Vendored at | Keys |
+| --- | --- | --- |
+| Independent upstream rez 3.4.0 | `upstream/rez-3.4.0/src/rez/rezconfig.py` | 146 |
+| rez-next `config_schema` | `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` | 140 |
 
-- The only `rezconfig.py` available in the rez-next checkout is
-  `crates/rez-next-python/python/rez_next/rezconfig.py` — rez-next's *own*
-  compatibility/defaults module. It is the **same side** of the comparison, so
-  using it as the reference would be circular and would prove nothing.
-- `crates/rez-next-python/python/rez_next/config.py` defines `config_schema`
-  (140 keys) — again rez-next's own side, not an independent upstream source.
-- `crates/rez-next-config/src/keys.rs` transcribes only **4** upstream default
-  *values* (`upstream_3_4_0_defaults()`), not the complete upstream key list.
-  `test_all_divergent_keys_are_registered` is one-directional
-  (`DIVERGENT_KEYS` subset of `registry`), and
-  `test_upstream_default_snapshot_stays_exhaustive` compares only the small
-  subset of keys that have a rez default — neither is a full bidirectional
-  keyset equality over `config_schema`.
-- No vendored `src/rez/rezconfig.py`, exported key-list fixture, or pinned rez
-  3.4.0 snapshot exists anywhere in the worktree or its resources. Fetching the
-  upstream source is out of scope here (synthetic fixtures only; no installation
-  or external acquisition authorised).
+Both are pre-existing local files from two different trees. AST extraction is
+implemented in `keyset_invariant.py` (`extract_rezconfig_keys` /
+`extract_schema_keys`); `assert_independent_sources()` rejects identical paths,
+identical contents, swapped trees and rez-next's own same-side `rezconfig.py`.
 
-## What was delivered instead
+## Result of the real run
 
-- A real, executable **bidirectional comparator** (`keyset_invariant.py`):
-  `compare_keysets()` returns both diffs and `keysets_equal()` requires both to
-  be empty. `load_keys()` can ingest authoritative lists from
-  `REZNEXT_SCHEMA_KEYS` and `REZ_340_REZCONFIG_KEYS` (JSON arrays of strings)
-  once both sources are supplied; no synthetic fake list is substituted.
-- `test_bidirectional_keyset_equality` is explicitly **skipped** with reason
-  `UNVERIFIED (not passed): ...`, so it cannot be mistaken for a green result.
-- The comparator's drift detection (both directions, and the "new registry key"
-  case) is proven with **synthetic key sets** and covered by mutation checks.
+`missing_in_schema` = 6 keys (`debug_old_commands`,
+`disable_rez_1_compatibility`, `error_old_commands`, `plugins`,
+`rez_1_environment_variables`, `warn_old_commands`);
+`missing_in_reference` = empty. `keysets_equal()` is `False`.
+`run_real_keyset_comparison.py` exits `1`;
+`test_strict_bidirectional_keyset_equality` is an explicit expected failure.
 
-## What must happen for the invariant to pass
+No key was deleted from either source to force a pass (both SHA-256 values are
+pinned and checked), and no source was reused for both sides. The six keys and
+their per-key compatibility policy are documented in
+`KEYSET_COMPATIBILITY.md`. Any new drift in either direction makes the
+divergence test fail, which is the registry-addition guard.
 
-Supply both authoritative key lists (the exported `config schema` key set and the
-rez 3.4.0 `rezconfig.py` key list) as the two JSON files named above, then run:
+## Commands
 
 ```bash
-python -m unittest verification/pip4717_config_p3/test_keyset_invariant.py -v
+python -I verification/pip4717_config_p3/run_real_keyset_comparison.py   # exits 1, prints both diffs
+python -m unittest discover -s verification/pip4717_config_p3 -v
 ```
-
-Only when both sources are independent and the skip condition lifts can the
-bidirectional equality be executed and reported as passed. Until then this item
-remains open in PIP-4717.

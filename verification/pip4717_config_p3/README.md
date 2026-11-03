@@ -1,89 +1,126 @@
-# PIP-4717 config follow-up: bounded verification harness
+# PIP-4717 config follow-up: real production fix + honest keyset comparison
 
-Isolated task directory for the four P3 findings carried over from rez-next #378
-and the missing bidirectional keyset invariant (PIP-4717 A + B).
+Isolated task directory for the four P3 findings carried over from rez-next
+#378 and the bidirectional keyset invariant (PIP-4717 A + B). This is the
+NACK-fix continuation of `2647505`: the first delivery substituted a Python
+port for the real Rust implementation and reported B as `UNVERIFIED`. Both are
+corrected here.
 
-## What this is (and is not)
+## What changed from the first delivery
 
-This is a **self-contained synthetic harness**. The real implementation lives in
-the `vx-org/rez-next` repository at
-`crates/rez-next-common/src/config.rs` and is **not** copied, vendored or edited
-here. This task's branch is `agent/agent/pip-4717` in `vx-rez-packages`; the
-rez-next source exists only in sibling worktrees owned by other tasks. Touching
-those would create a second writer and break the stage-3 (PIP-4612) / stage-4
-serial order, so this delivery stays inside its own isolated directory.
+- **A is now landed in the real Rust source.** `crates/rez-next-common/src/
+  config.rs` is a verbatim copy of the production file at rez-next head
+  `240500672ec42c916aab3a8ae3a638c6e2d4302` (#380 merged head) with **only** the
+  four P3 source fixes applied. `upstream/rez-next@2405006/.../config.rs` holds
+  the unmodified pristine copy; `config_p3_fix.patch` is the unified diff with
+  the real repo-relative paths and can be applied directly to a rez-next
+  checkout. `tools/build_fixed_config.py` reproduces the transformation with
+  one-match assertions on every anchor.
+- **The Rust source is compiled and tested for real.** `rust_probe/` is a small
+  standalone Cargo crate that compiles the fixed `config.rs` via `#[path]`,
+  supplying verbatim copies of the only crate-internal items it references
+  (`error.rs`, `project.rs`, `keys.rs`). `cargo test --offline` runs the full
+  production test suite plus the new A regression tests against that real file.
+  It is not a synthetic model.
+- **B is executed, not skipped.** Two independent authoritative sources are
+  vendored read-only and AST-compared. The real bidirectional comparison
+  genuinely FAILs with six documented keys. See `KEYSET_COMPATIBILITY.md`.
 
-`config_override.py` is a behaviour-faithful synthetic port of the two override
-helpers. All test inputs are synthetic in-memory values; no real rezconfig file,
-no downloaded rez 3.4.0 source, and no network data are used.
+The earlier "synthetic fixtures only" constraint limited test *data* and
+isolated *copies*; it never authorised replacing the production implementation
+with a Python port. `config_override.py` and its tests are retained as a
+secondary cross-check only, not as acceptance evidence.
 
-Before writing anything, the findings were re-checked against rez-next
-`origin/main` (`7dd9410`): `crates/rez-next-common/src/config.rs` and
-`crates/rez-next-config/src/keys.rs` are unchanged since the #380 head
-(`2405006`), so all four P3 items and the keyset gap are still open — nothing
-already fixed was repeated.
+## Source provenance
 
-## Coverage locked by named tests
-
-| Finding | Branch / behaviour | Named test |
+| File | Origin | SHA-256 prefix |
 | --- | --- | --- |
-| A1-a | `assign_cache` rejects unknown subkey, target unchanged | `test_unknown_cache_subkey_is_rejected` |
-| A1-b | `assign_cache` rejects non-object, target unchanged | `test_cache_non_object_is_rejected_and_target_unchanged` |
-| A1-c | `assign_path_list` rejects non-string array item | `test_path_list_non_string_item_is_rejected` |
-| A1-d | `assign_path_list` rejects non-array / non-string | `test_path_list_non_array_non_string_is_rejected` |
-| A2 | stderr report wording does not claim rez equivalence | `test_report_comment_does_not_claim_rez_equivalence` |
-| A2 | report goes to stderr, loader continues | `test_report_goes_to_stderr_and_loader_continues` |
-| A3 | accepted-cache-key message derives from the struct | `test_cache_key_message_tracks_struct_fields` |
-| A4 | `test_load_returns_config` holds `env_lock()` around `load()` | `test_load_returns_config_holds_env_lock` |
-| B | comparator detects drift in both directions | `test_comparator_*`, `test_keysets_equal_detects_registry_addition` |
-| — | control: already-fixed partial patch keeps sibling keys | `test_partial_cache_patch_keeps_sibling_keys` |
+| `upstream/rez-next@2405006/crates/rez-next-common/src/config.rs` | rez-next `2405006` | `91387fba4f92` |
+| `upstream/rez-next@2405006/crates/rez-next-python/python/rez_next/config.py` | rez-next `2405006` | `be12a3bd138c` |
+| `upstream/rez-3.4.0/src/rez/rezconfig.py` | upstream rez 3.4.0 | `c634be4d326b` |
 
-## Comment correction (A2), exact wording for upstream
+The rez-next `origin/main` (`7dd9410`) copy of `config.rs` is unchanged since
+the #380 head, so all four P3 items were still open; nothing already merged was
+repeated. No other task's checkout was modified — all rez-next worktrees in
+this workspace belong to other tasks, so this delivery stays in its own
+isolated directory on `agent/agent/pip-4717`.
 
-Current text in `crates/rez-next-common/src/config.rs` (around line 527) still
-claims equivalence with rez:
+## A: named regression tests in the real Rust file
 
-```rust
-    /// A malformed override is a user-visible mistake and must not pass
-    /// silently: rez raises `ConfigurationError` for the same condition
-    /// (`src/rez/config.py`), and the config-file side of this loader already
-    /// errors rather than falling back to defaults.
-```
+| Finding | Branch / behaviour | Named Rust test |
+| --- | --- | --- |
+| A1-a | `assign_cache` rejects unknown subkey, target unchanged | `test_assign_cache_rejects_unknown_subkey_and_preserves_target` |
+| A1-b | `assign_cache` rejects non-object, target unchanged | `test_assign_cache_rejects_non_object_and_preserves_target` |
+| A1-c | `assign_path_list` rejects non-string array item | `test_assign_path_list_rejects_non_string_item_and_preserves_target` |
+| A1-d | `assign_path_list` rejects non-array / non-string | `test_assign_path_list_rejects_non_array_non_string_and_preserves_target` |
+| A2 | stderr-report comment no longer claims rez equivalence | `test_report_comment_does_not_claim_rez_equivalence` |
+| A3 | accepted-cache-key wording derived from the struct | `test_expected_cache_keys_is_derived_from_serialized_struct`, `test_unknown_cache_key_message_lists_derived_keys` |
+| A4 | `test_load_returns_config` holds `env_lock()` | `test_load_returns_config_holds_env_lock` |
+| control | already-fixed partial patch keeps sibling keys | `test_assign_cache_partial_patch_keeps_sibling_keys` |
 
-rez actually aborts on `Setting.validate`; rez-next warns and continues. Replace
-with wording that states the divergence explicitly ("reported instead of failing
-hard"):
+A2 and A4 are source-text properties, so their tests read the real
+`config.rs` back with `include_str!`. Search needles are split with `concat!`
+so a test cannot satisfy itself by matching its own literal. A3's derivation
+test feeds a simulated extra struct field through `expected_cache_keys()` and
+asserts it appears in the wording — reverting to the hardcoded `CACHE_KEYS`
+constant makes that test red.
 
-```rust
-    /// A malformed override is reported to stderr instead of failing hard:
-    /// upstream rez raises `ConfigurationError` and aborts
-    /// (`src/rez/config.py`), while rez-next keeps the previously loaded value
-    /// and continues. The stderr report is not equivalent to rez's behaviour.
-```
+`rust_mutation_checks.py` reverts each A fix in a private copy of the real
+Rust source, recompiles with `cargo test --offline`, and requires the exact
+named test to run and fail while the unmutated baseline passes.
 
-`config_override.py::REPORT_BEHAVIOR_COMMENT` carries the corrected wording and
-is locked by a named test, so a regression back to the over-claim is caught.
+## B: executed comparison, honest FAIL
 
-## The keyset invariant is NOT passed
-
-The real bidirectional comparison (`config_schema` keys == rez 3.4.0
-`rezconfig.py` keys, both diffs empty, and failing when a registry key is added
-without registration) is **not executed and must not be reported as passed**.
-`test_bidirectional_keyset_equality` is explicitly skipped with the reason
-`UNVERIFIED (not passed)`. The comparator itself is complete and its drift
-detection is proven with synthetic key sets only. See `EVIDENCE_GAP.md`.
+`keyset_invariant.py` AST-extracts 146 upstream keys and 140 `config_schema`
+keys from two independent vendored trees. The real comparison produces
+`missing_in_schema` = 6 keys and `missing_in_reference` = empty;
+`keysets_equal()` is `False`. `KEYSET_COMPATIBILITY.md` records the per-key
+compatibility policy. Nothing is deleted, no source is reused, and both source
+hashes are pinned. Source-independence negative cases (same file, identical
+content, same-side `rezconfig.py`, swapped trees) are all covered.
 
 ## How to run
 
 From the repository root:
 
 ```bash
+# Real Rust production path (81 tests, offline)
+cd verification/pip4717_config_p3/rust_probe
+CARGO_TARGET_DIR=../.cargo-target cargo test --offline
+
+# Executed real keyset comparison — exits 1 while strict equality is unmet
+python -I verification/pip4717_config_p3/run_real_keyset_comparison.py
+
+# Python harness (secondary cross-checks + B tests)
 python -m unittest discover -s verification/pip4717_config_p3 -v
+
+# Mutation verification (Python + real Rust)
 python verification/pip4717_config_p3/mutation_checks.py
+python verification/pip4717_config_p3/rust_mutation_checks.py
 ```
 
-`mutation_checks.py` copies the harness to a private temporary directory, applies
-one mutation per named test, and runs that exact named test in a fresh
-`python -m unittest <dotted.name>` subprocess. A mutation is killed only when the
-named test actually runs and fails under mutation while the unmutated copy passes.
-The task worktree is never modified.
+`cargo test` writes build artifacts to `.cargo-target/` (ignored via this
+directory's `.gitignore`). All mutation runs happen in private temporary
+copies; the task worktree is never modified.
+
+The unified patch applies cleanly to a rez-next checkout with either
+`git apply config_p3_fix.patch` or `patch -p1 < config_p3_fix.patch`; both
+produce exactly `crates/rez-next-common/src/config.rs`. `tools/build_fixed_config.py`
+regenerates that file byte-for-byte from the pristine snapshot.
+
+## Validation results
+
+| Check | Result |
+| --- | --- |
+| `cargo test --offline` (real Rust production source) | 81 passed, 0 failed |
+| `python -I run_real_keyset_comparison.py` | exits **1**, 146 reference keys / 140 schema keys / 6 `missing_in_schema` / 0 `missing_in_reference` |
+| `python -m unittest discover -s verification/pip4717_config_p3 -v` | 26 tests, OK (expected failures=1) |
+| `python mutation_checks.py` | 25 baseline tests green, strict equality expected-failure, real comparison honest FAIL, 15/15 Python mutations killed |
+| `python rust_mutation_checks.py` | full 81-test suite green, 9 named tests green, 8/8 real-Rust mutations killed and restored green |
+| `python -m pytest -q tests` (repository suite) | 99 passed, 209 subtests passed |
+| `ruff check` / `ruff format --check` (harness-owned Python) | clean |
+
+The strict-equality `unittest.expectedFailure` is deliberate: deleting the six
+keys or reusing one source for both sides would turn it into an *unexpected
+success*, which unittest reports as a failure. Both source SHA-256 values are
+pinned, so key removal is also caught directly.

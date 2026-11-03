@@ -1,8 +1,9 @@
-"""Named regression tests for the four config override error branches (PIP-4717 A).
+"""Supplementary synthetic tests for the four override error branches (PIP-4717 A).
 
-Every test uses only synthetic in-memory values. These lock the contracts of the
-four review findings A1-A4 against the synthetic port in ``config_override.py``;
-they do not execute the Rust crate.
+Every test uses only synthetic in-memory values. These are a secondary
+cross-check against ``config_override.py``; they do NOT execute the Rust crate
+and are NOT the acceptance evidence. The authoritative named tests live in the
+real Rust ``crates/rez-next-common/src/config.rs`` and run via ``cargo test``.
 """
 
 from __future__ import annotations

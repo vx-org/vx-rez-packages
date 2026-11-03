@@ -1,10 +1,14 @@
-"""Execute named tests against mutated copies of the synthetic fixture.
+"""Execute named Python tests against mutated copies of the harness.
 
-Each mutation is applied to a PRIVATE temporary copy of ``config_override.py`` /
-``keyset_invariant.py``; the named unittest is then executed in a fresh subprocess
-(``python -m unittest <dotted.name>``). A mutation counts as killed only when
-that exact test runs and fails, while the unmutated copy of the same test passes.
-Nothing in the task worktree is modified.
+Each mutation is applied to a PRIVATE temporary copy of the harness; the named
+unittest is then executed in a fresh interpreter (``python -m unittest
+<dotted.name>``). A mutation counts as killed only when that exact test runs
+and fails, while the unmutated copy of the same test passes. Nothing in the
+task worktree is modified.
+
+The authoritative A1-A4 mutation verification is in ``rust_mutation_checks.py``,
+which mutates the REAL Rust ``config.rs`` and recompiles with ``cargo test``.
+These Python mutations are a secondary cross-check of the harness itself.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ HARNESS_FILES = (
     "keyset_invariant.py",
     "test_config_override.py",
     "test_keyset_invariant.py",
+    "run_real_keyset_comparison.py",
 )
 
 BASELINE_TESTS = (
@@ -39,11 +44,25 @@ BASELINE_TESTS = (
     "test_keyset_invariant.TestComparator.test_comparator_detects_missing_in_reference",
     "test_keyset_invariant.TestComparator.test_comparator_empty_diff_for_equal_keysets",
     "test_keyset_invariant.TestComparator.test_keysets_equal_detects_registry_addition",
+    "test_keyset_invariant.TestSourceIndependence.test_real_sources_are_independent",
+    "test_keyset_invariant.TestSourceIndependence.test_same_file_env_input_is_rejected",
+    "test_keyset_invariant.TestSourceIndependence.test_identical_content_distinct_files_are_rejected",
+    "test_keyset_invariant.TestSourceIndependence.test_rez_next_own_rezconfig_is_rejected_as_reference",
+    "test_keyset_invariant.TestSourceIndependence.test_schema_and_reference_trees_cannot_be_swapped",
+    "test_keyset_invariant.TestSourceIndependence.test_same_source_would_otherwise_fake_an_empty_diff",
+    "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_reference_source_hash_is_pinned",
+    "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_schema_source_hash_is_pinned",
+    "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_no_keys_were_deleted_from_either_source",
+    "test_keyset_invariant.TestRealBidirectionalComparison.test_real_comparison_documents_the_six_key_divergence",
+    "test_keyset_invariant.TestRealBidirectionalComparison.test_new_upstream_key_without_schema_registration_is_detected",
+    "test_keyset_invariant.TestRealBidirectionalComparison.test_new_schema_key_without_upstream_key_is_detected",
 )
 
-# Explicitly unverified: no independent rez 3.4.0 key list is available.
-UNVERIFIED_TEST = (
-    "test_keyset_invariant.TestRealBidirectionalInvariant.test_bidirectional_keyset_equality"
+# The strict invariant genuinely fails: unittest must report exactly one
+# expected failure, never a pass or a skip.
+STRICT_EQUALITY_TEST = (
+    "test_keyset_invariant.TestRealBidirectionalComparison."
+    "test_strict_bidirectional_keyset_equality"
 )
 
 
@@ -134,13 +153,43 @@ MUTATIONS = (
         "    return True",
         "test_keyset_invariant.TestComparator.test_keysets_equal_detects_registry_addition",
     ),
+    Mutation(
+        "B env-source independence check removed",
+        "keyset_invariant.py",
+        "    assert_distinct_sources(Path(schema_path), Path(reference_path))\n"
+        "    schema = load_keys(SCHEMA_SOURCE_ENV)",
+        "    pass  # independence check removed\n    schema = load_keys(SCHEMA_SOURCE_ENV)",
+        "test_keyset_invariant.TestSourceIndependence.test_same_file_env_input_is_rejected",
+    ),
+    Mutation(
+        "B upstream-tree independence check removed",
+        "keyset_invariant.py",
+        "    if not reference.is_relative_to(REFERENCE_TREE.resolve()):",
+        "    if False and not reference.is_relative_to(REFERENCE_TREE.resolve()):",
+        "test_keyset_invariant.TestSourceIndependence.test_rez_next_own_rezconfig_is_rejected_as_reference",
+    ),
+    Mutation(
+        "B pinned divergence allowlist tampered",
+        "keyset_invariant.py",
+        '    "plugins",\n    "rez_1_environment_variables",',
+        '    "rez_1_environment_variables",',
+        "test_keyset_invariant.TestRealBidirectionalComparison.test_real_comparison_documents_the_six_key_divergence",
+    ),
+    Mutation(
+        "B upstream source hash pin tampered",
+        "keyset_invariant.py",
+        '"c634be4d326be7cf41d1545e3b00b0495074281f0e9e09e384ac69b0ba852e05"',
+        '"0000000000000000000000000000000000000000000000000000000000000000"',
+        "test_keyset_invariant.TestVendoredSourcesAreUnmodified.test_reference_source_hash_is_pinned",
+    ),
 )
 
 
 def copy_harness(dest: Path) -> None:
-    """Copy the synthetic fixture into a private scratch directory."""
+    """Copy the harness (including vendored independent sources) into scratch."""
     for name in HARNESS_FILES:
         shutil.copy2(HARNESS_DIR / name, dest / name)
+    shutil.copytree(HARNESS_DIR / "upstream", dest / "upstream")
 
 
 def run_named_test(workdir: Path, test: str) -> subprocess.CompletedProcess[str]:
@@ -166,6 +215,17 @@ def baseline_passes(workdir: Path, test: str) -> bool:
     return result.returncode == 0 and "Ran 1 test" in output and "OK" in output
 
 
+def run_real_comparison(workdir: Path) -> subprocess.CompletedProcess[str]:
+    """Run the standalone real comparison; it must exit 1 (strict FAIL)."""
+    return subprocess.run(
+        [sys.executable, "-I", str(workdir / "run_real_keyset_comparison.py")],
+        cwd=workdir,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def mutation_killed(workdir: Path, test: str) -> bool:
     result = run_named_test(workdir, test)
     output = combined_output(result)
@@ -179,7 +239,7 @@ def main() -> int:
     print(f"python:  {sys.executable}")
     ok = True
 
-    print("\n[1/3] baseline: every named test must pass unmutated")
+    print("\n[1/4] baseline: every named test must pass unmutated")
     with tempfile.TemporaryDirectory() as base_tmp:
         base_dir = Path(base_tmp)
         copy_harness(base_dir)
@@ -188,17 +248,47 @@ def main() -> int:
             print(f"  {'GREEN' if passed else 'FAIL  '}  {test}")
             ok = ok and passed
 
-    print("\n[2/3] unverified: real bidirectional keyset comparison")
-    with tempfile.TemporaryDirectory() as skip_tmp:
-        skip_dir = Path(skip_tmp)
-        copy_harness(skip_dir)
-        result = run_named_test(skip_dir, UNVERIFIED_TEST)
+    print("\n[2/4] strict equality: executed and reported as an expected failure")
+    with tempfile.TemporaryDirectory() as strict_tmp:
+        strict_dir = Path(strict_tmp)
+        copy_harness(strict_dir)
+        result = run_named_test(strict_dir, STRICT_EQUALITY_TEST)
         output = combined_output(result)
-        skipped = result.returncode == 0 and "skipped" in output
-        print(f"  {'SKIPPED / UNVERIFIED' if skipped else 'UNEXPECTED'}  {UNVERIFIED_TEST}")
-        ok = ok and skipped
+        expected_failure = (
+            result.returncode == 0 and "Ran 1 test" in output and "expected failures=1" in output
+        )
+        print(
+            f"  {'EXPECTED FAILURE' if expected_failure else 'UNEXPECTED'}  {STRICT_EQUALITY_TEST}"
+        )
+        ok = ok and expected_failure
 
-    print("\n[3/3] mutation: each named test must go red under its mutation")
+    print("\n[3/4] real bidirectional comparison: must exit 1 with the six keys")
+    with tempfile.TemporaryDirectory() as real_tmp:
+        real_dir = Path(real_tmp)
+        copy_harness(real_dir)
+        result = run_real_comparison(real_dir)
+        output = combined_output(result)
+        honest_fail = (
+            result.returncode == 1
+            and "RESULT: FAIL" in output
+            and all(
+                key in output
+                for key in (
+                    "debug_old_commands",
+                    "disable_rez_1_compatibility",
+                    "error_old_commands",
+                    "plugins",
+                    "rez_1_environment_variables",
+                    "warn_old_commands",
+                )
+            )
+        )
+        print(
+            f"  {'FAIL (honest)' if honest_fail else 'UNEXPECTED'}  run_real_keyset_comparison.py"
+        )
+        ok = ok and honest_fail
+
+    print("\n[4/4] mutation: each named test must go red under its mutation")
     for mutation in MUTATIONS:
         with tempfile.TemporaryDirectory() as mut_tmp:
             mut_dir = Path(mut_tmp)
