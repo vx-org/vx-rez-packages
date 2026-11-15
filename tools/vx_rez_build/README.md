@@ -60,18 +60,28 @@ Three measured rez-next 0.3.10 gaps make a bare `rez build` unsafe for VX:
 - **Only the exit code crosses back** from the subprocess, so an empty payload
   looks like a success. The wrapper asserts a non-empty payload.
 
-The child environment is also cleared before the script's own is applied — on
-Windows that leaves **no `PATH`**, so `build.py` cannot shell out. The wrapper
-restores `PATH`, `TEMP`, `TMP`, `SystemRoot` and friends, and sets
+The child environment is cleared before the script runs. Passing variables to
+the parent `rez` process alone does not restore them. The wrapper stages a copy
+of the source (excluding `.git` and `__pycache__`), preserves the pinned
+`package.py`, and replaces the staged `build.py` with a bootstrap. The original
+script is retained as `.vx-original-build.py`. The bootstrap reads an adjacent
+temporary `.vx-build-environment.json`, restores only the explicit allowlist in
+`bootstrap.py`, then runs the original script with the same phase argument.
+The sidecar carries `PATH`, Windows temporary/runtime paths, named HTTP proxy
+variables, `REZ_PACKAGES_PATH`, `VX_BUILD_TRIPLE` and `VX_BUILD_RECIPE`. It does
+not copy the entire parent environment and is not part of the payload bundle.
+The parent also sets
 `REZ_BUILD_TARGET_PLATFORM` / `_ARCH` / `_OS`, which rez-next reads but never
 sets (unset, they silently default to the host).
 
-## `build_system = "custom"` is refused
+## Only `build_system = "build.py"` is accepted
 
-rez-next resolves any unrecognised build system to `Custom(<value>)`, and
-`custom` degenerates to a **copy-only build in which the script never runs**.
-That is a silent no-op that looks like a successful release, so the wrapper
-rejects it before invoking `rez`. Use `build_system = "build.py"`.
+The wrapper requires exactly one direct literal assignment and rejects
+duplicates, indirect bindings, all other names, and any `build_command`
+override. In rez-next 0.3.10, `default` and `copy-only` copy files, while
+`build_command` executes a separate command during installation. These modes
+do not satisfy this wrapper's named Python-script contract. `custom` is also
+refused; it must not be described as universally copy-only.
 
 ## Environment handed to `build.py`
 
@@ -87,3 +97,6 @@ rejects it before invoking `rez`. Use `build_system = "build.py"`.
 must be resolved through `VX_BUILD_RECIPE` rather than relative to `__file__`.
 See [`docs/build-py-contract.md`](../../docs/build-py-contract.md) for the full
 contract.
+
+The real `witr` pilot remains an adoption gate. A subprocess environment smoke
+does not prove bundle equivalence or SDK `installation-plan` compatibility.

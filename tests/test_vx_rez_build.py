@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -119,9 +121,28 @@ class ValidatePackageDefinitionTests(unittest.TestCase):
         validate_package_definition(package_source("build.py"))
 
     def test_rejects_custom_build_system(self):
-        """rez-next resolves 'custom' to a copy-only build; the script never runs."""
-        with self.assertRaisesRegex(BuildError, "copy-only build"):
-            validate_package_definition(package_source("custom"))
+        for value in ("custom", "default", "copy-only", "build_command", "other.py"):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(BuildError, "must be 'build.py'"),
+            ):
+                validate_package_definition(package_source(value))
+
+    def test_rejects_overridden_or_indirect_build_system(self):
+        for extra in (
+            b"build_system = 'copy-only'\n",
+            b"build_system: str = 'build.py'\n",
+            b"if True:\n    build_system = 'copy-only'\n",
+            b"del build_system\n",
+        ):
+            with self.subTest(extra=extra), self.assertRaisesRegex(BuildError, "exactly once"):
+                validate_package_definition(package_source() + extra)
+        with self.assertRaisesRegex(BuildError, "one literal string assignment"):
+            validate_package_definition(b"build_system = other = 'build.py'\n")
+
+    def test_rejects_build_command_override(self):
+        with self.assertRaisesRegex(BuildError, "must not override"):
+            validate_package_definition(package_source() + b"build_command = 'false'\n")
 
     def test_rejects_missing_build_system(self):
         with self.assertRaisesRegex(BuildError, "must declare build_system"):
@@ -230,7 +251,7 @@ class BuildVariantTests(unittest.TestCase):
         patches = [
             *self._patch()[0:2],
             patch.object(builder, "_assert_native_target"),
-            self.assertRaisesRegex(BuildError, "copy-only build"),
+            self.assertRaisesRegex(BuildError, "must be 'build.py'"),
         ]
         with ExitStack() as stack:
             for item in patches:
@@ -254,6 +275,53 @@ class NativeTargetTests(unittest.TestCase):
 
 
 class EnvironmentContractTests(unittest.TestCase):
+    def test_staged_script_receives_context_after_environment_clearing(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            source.mkdir()
+            pinned = root / "package.py"
+            pinned.write_bytes(package_source())
+            (source / "build.py").write_text(
+                "import json, os, sys\n"
+                "from pathlib import Path\n"
+                "assert 'UNRELATED_SECRET' not in os.environ\n"
+                "Path(os.environ['VX_BUILD_RECIPE']).write_text(json.dumps({"
+                "'path': os.environ['PATH'], 'triple': os.environ['VX_BUILD_TRIPLE'], "
+                "'phase': sys.argv[1]}))\n",
+                encoding="utf-8",
+            )
+            evidence = root / "observed.json"
+            staged = builder._stage_build_source(
+                source,
+                root / "staged",
+                pinned,
+                {
+                    "PATH": str(Path(sys.executable).parent),
+                    "VX_BUILD_RECIPE": str(evidence),
+                    "VX_BUILD_TRIPLE": TRIPLE,
+                    "UNRELATED_SECRET": "not-forwarded",
+                },
+            )
+            cleared = {
+                key: os.environ[key] for key in ("SystemRoot", "WINDIR") if key in os.environ
+            }
+            subprocess.run(
+                [sys.executable, str(staged / "build.py"), "install"],
+                env=cleared,
+                check=True,
+                capture_output=True,
+                timeout=20,
+            )
+            self.assertEqual(
+                json.loads(evidence.read_text()),
+                {"path": str(Path(sys.executable).parent), "triple": TRIPLE, "phase": "install"},
+            )
+            self.assertEqual((staged / "package.py").read_bytes(), pinned.read_bytes())
+            self.assertNotEqual(
+                (staged / "build.py").read_bytes(), (source / "build.py").read_bytes()
+            )
+
     def test_sets_path_and_target_variables(self):
         environment = builder._build_environment(
             base={"PATH": "/usr/bin"},
@@ -321,6 +389,7 @@ class RezExecutionTests(unittest.TestCase):
     def test_failure_surfaces_exit_code(self):
         with (
             patch.object(builder, "_resolve_rez_executable", return_value=Path("/bin/rez")),
+            patch.object(builder, "_stage_build_source", return_value=Path("/staged")),
             patch.object(
                 builder.subprocess,
                 "run",

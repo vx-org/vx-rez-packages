@@ -14,6 +14,7 @@ The wrapper compensates for three measured rez-next 0.3.10 gaps:
 from __future__ import annotations
 
 import ast
+import json
 import os
 import platform as host_platform
 import shutil
@@ -24,9 +25,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tools import build_bundle
+from tools.vx_rez_build import bootstrap
 
 BUILD_SYSTEM_FILENAME = "build.py"
-FORBIDDEN_BUILD_SYSTEMS = frozenset({"custom"})
 
 #: Only the rez-next binary implements the ``build`` subcommand the wrapper needs.
 #: ``rez-next`` is preferred because the name is unambiguous: a legacy pip
@@ -79,34 +80,42 @@ def _assert_native_target(target: dict) -> None:
 
 
 def validate_package_definition(package_source: bytes, *, filename: str = "package.py") -> None:
-    """Reject a ``package.py`` whose build system rez-next would silently ignore.
-
-    rez-next resolves any unrecognised build system to ``Custom(<value>)``, and
-    ``custom`` degenerates to a copy-only build in which the script never runs.
-    A silent no-op build looks like a successful release, so it is refused here
-    rather than caught in review.
-    """
+    """Require one unambiguous named script, with no build-command override."""
     try:
         module = ast.parse(package_source, filename=filename)
     except (SyntaxError, ValueError) as error:
         raise BuildError(f"package definition contains invalid Python syntax: {error}") from error
 
+    bindings = []
+    for node in ast.walk(module):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+            bindings.append((node.id, node))
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            bindings.append((node.name, node))
+        elif isinstance(node, ast.alias):
+            bindings.append((node.asname or node.name.split(".")[0], node))
+    if any(name == "build_command" for name, _ in bindings):
+        raise BuildError("package definition must not override the script with build_command")
+    declarations = [node for name, node in bindings if name == "build_system"]
+    if not declarations:
+        raise BuildError("package definition must declare build_system")
+    if len(declarations) != 1:
+        raise BuildError("package definition must declare build_system exactly once")
     for statement in module.body:
-        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
-            continue
-        target, value = statement.targets[0], statement.value
-        if not (isinstance(target, ast.Name) and target.id == "build_system"):
-            continue
-        if not isinstance(value, ast.Constant) or type(value.value) is not str:
-            raise BuildError("package definition build_system must be a literal string")
-        declared = value.value
-        if declared in FORBIDDEN_BUILD_SYSTEMS:
-            raise BuildError(
-                f"build_system {declared!r} degenerates to a copy-only build in rez-next; "
-                f"use {BUILD_SYSTEM_FILENAME!r} instead"
-            )
-        return
-    raise BuildError("package definition must declare build_system")
+        if (
+            isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and statement.targets[0] is declarations[0]
+        ):
+            value = statement.value
+            if not isinstance(value, ast.Constant) or type(value.value) is not str:
+                raise BuildError("package definition build_system must be a literal string")
+            if value.value != BUILD_SYSTEM_FILENAME:
+                raise BuildError(
+                    f"package definition build_system must be {BUILD_SYSTEM_FILENAME!r}"
+                )
+            return
+    raise BuildError("package definition build_system must be one literal string assignment")
 
 
 def _write_system_packages(repository: Path, target: dict) -> Path:
@@ -131,11 +140,9 @@ def _build_environment(
     recipe_path: Path,
     extra_paths: Iterable[Path] = (),
 ) -> dict[str, str]:
-    """Build the child environment, restoring what rez-next's clearing would strip."""
+    """Prepare the rez parent environment; the staged bootstrap restores the child."""
     environment = dict(base)
-    # rez-next clears the child environment before applying the script's own; on
-    # Windows that leaves no PATH at all, so shelling out to 7z/git/tar fails.
-    path_entries = [str(path) for path in (*extra_paths, *[])]
+    path_entries = [str(path) for path in extra_paths]
     existing = environment.get("PATH")
     if existing:
         path_entries.append(existing)
@@ -152,6 +159,26 @@ def _build_environment(
     # The script runs from a temporary copy, so recipe paths must be absolute.
     environment["VX_BUILD_RECIPE"] = str(recipe_path.resolve())
     return environment
+
+
+def _stage_build_source(
+    source: Path, destination: Path, package_source: Path, environment: dict[str, str]
+) -> Path:
+    """Freeze the source and carry only explicit environment keys through env_clear."""
+    if not (source / BUILD_SYSTEM_FILENAME).is_file():
+        raise BuildError(f"build script is missing: {source / BUILD_SYSTEM_FILENAME}")
+    for reserved in (bootstrap.CONTEXT_FILENAME, bootstrap.SCRIPT_FILENAME):
+        if (source / reserved).exists():
+            raise BuildError(f"build source uses reserved bootstrap file: {reserved}")
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    destination.joinpath("package.py").write_bytes(package_source.read_bytes())
+    destination.joinpath(BUILD_SYSTEM_FILENAME).rename(destination / bootstrap.SCRIPT_FILENAME)
+    destination.joinpath(BUILD_SYSTEM_FILENAME).write_bytes(Path(bootstrap.__file__).read_bytes())
+    context = {key: environment[key] for key in bootstrap.ENVIRONMENT_KEYS if key in environment}
+    destination.joinpath(bootstrap.CONTEXT_FILENAME).write_text(
+        json.dumps(context), encoding="utf-8", newline="\n"
+    )
+    return destination
 
 
 def _target_os(target_platform: str) -> str:
@@ -264,10 +291,13 @@ def _run_rez_build(
         recipe_path=recipe_path,
         extra_paths=[Path(executable).parent],
     )
+    staged_source = _stage_build_source(
+        source, package_source.parent / "source", package_source, environment
+    )
     command = [
         str(executable),
         "build",
-        str(source),
+        str(staged_source),
         "--install",
         "--prefix",
         str(repository),
