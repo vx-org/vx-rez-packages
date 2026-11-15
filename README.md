@@ -163,3 +163,9 @@ environment semantics and is separate from installed VX acceptance.
 A [catalog](docs/catalog.md) can pin release indices across runtime repositories.
 It adds a verified catalog-to-index download chain and exact tool/version lookup;
 dependency resolution and environment interpretation remain in Rez Next.
+
+Packages are currently assembled by `tools/build_bundle.py` from a declarative
+`recipe.json`. The move to per-package `build.py` scripts driven by `rez build` is
+documented in [build.py contract](docs/build-py-contract.md), with the supporting
+investigation in [rez build spike](docs/spike-rez-build-feasibility.md). Both are
+proposals; the assembly path above is unchanged until a pilot proves the new one.
