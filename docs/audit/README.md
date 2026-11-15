@@ -17,7 +17,7 @@ then verified every claim against source rather than repeating it.
 
 | # | Document | Scope |
 | --- | --- | --- |
-| 00 | [`00-rez-spec-baseline.md`](00-rez-spec-baseline.md) | the normative Rez reference this audit measures against (A–F, with a quick-lookup index) |
+| 00 | [`00-rez-spec-baseline.md`](00-rez-spec-baseline.md) | normative Rez reference; index of the A–F chapters and quick-lookup index under `rez-spec-baseline/` |
 | 01 | [`01-build.md`](01-build.md) | build systems, `build_command`, `REZ_BUILD_*`, variants, requires, `rez build` CLI, build process, timestamp |
 | 02 | [`02-test-release.md`](02-test-release.md) | `rez test`, `tests` attribute, release phases, release hooks, release VCS, tag policy, `ReleaseMode` |
 | 03 | [`03-repo-ecosystem.md`](03-repo-ecosystem.md) | package repositories, copy/move/remove, caching, and the wider CLI surface |
