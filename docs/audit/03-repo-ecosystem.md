@@ -1196,7 +1196,7 @@ rez-bundle rez-benchmark rez-pkg-ignore rez-mv rez-rm` (33 entries).
 # Candidate GitHub issues
 
 Each entry is a proposed public-safe issue for `vx-org/rez-next`. Bodies contain no internal
-identifiers, private paths, or Monica references.
+identifiers or private paths.
 
 ---
 

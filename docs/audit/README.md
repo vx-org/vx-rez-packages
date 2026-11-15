@@ -8,7 +8,7 @@ Audit-only. No implementation code was changed in either repository.
 | --- | --- | --- |
 | **Specification** — `AcademySoftwareFoundation/rez` | `f622b81`, `_rez_version = "3.4.0"` (`src/rez/utils/_version.py:7`) | the Rez spec; every "rez spec side" citation resolves to this tree |
 | **Implementation** — `vx-org/rez-next` | `97eef03`, `version = "0.3.10"` (`Cargo.toml`) | the implementation VX ships against |
-| **Consumer** — `vx-org/vx-rez-packages` | `0c493bb` | the private protocol under examination |
+| **Consumer** — `vx-org/vx-rez-packages` | `8ca39f0` | the private protocol under examination |
 
 The audit brief's own starting point was `docs/production-readiness.md`. This audit read it,
 then verified every claim against source rather than repeating it.

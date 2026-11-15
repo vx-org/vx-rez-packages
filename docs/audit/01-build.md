@@ -501,9 +501,9 @@ Upstream has **no** `--no-install`, `--release`, `--paths`, `--keep-tmp`, `-j`, 
 **判定:**
 - Flag *surface*: **ALIGNED / superset**. rez-next has every upstream flag plus `--release`, `--source/--subdir/--reference`, `--skip-tests`, `--tui`, `--output`, `--force`.
 - **GAP (needs rez-next work):** five declared flags are silently accepted and ignored (`--process`, `-b/--build-system`, `--cba`, `--fail-graph`, `-s/--scripts`), and `--clean`/`--force` are no-ops because `force_rebuild` and `clean_before_build` are write-only. Silently ignoring `-b/--build-system` is the most dangerous: a caller who passes it believes they overrode the package's build system when they did not.
-- `--paths` and `--keep-tmp`: **ALIGNED by absence** — neither exists upstream on `rez-build` either. Note `sub1-wrapper.md` already records that "`rez build` 没有 `--repository` 参数".
+- `--paths` and `--keep-tmp`: **ALIGNED by absence** — neither exists upstream on `rez-build` either.
 
-**VX impact: BLOCKING for the `vx build` wrapper as specified.** The wrapper's planned invocation is `rez build <source> --install --prefix <repo> --build-system build.py`; `--build-system` is a no-op, so the selection must come from `package.py`'s `build_system = "build.py"` (which does work — but `sub1`'s acceptance criterion "`build_system = "custom"` 必须被测试拒绝" needs to be re-scoped: `custom` is *not* rejected today, it silently degrades to `Custom("default")` copy-only, upstream gap G8). Additionally `--clean` cannot be relied on to clear a stale build directory.
+**VX impact: BLOCKING for the `vx build` wrapper as specified.** The wrapper's planned invocation is `rez build <source> --install --prefix <repo> --build-system build.py`; `--build-system` is a no-op, so the selection must come from `package.py`'s `build_system = "build.py"` (which does work — `custom` is *not* rejected today; it silently degrades to `Custom("default")` copy-only, upstream gap G8). Additionally `--clean` cannot be relied on to clear a stale build directory.
 
 ---
 
@@ -718,7 +718,7 @@ def _uri(self) -> str:
 - Variant *request* syntax (`pkg[1]`, `pkg[.variant]`): **ALIGNED — absent on both sides.** Upstream has never shipped it; the `[index]` form is a URI rendering.
 - Variant *URI parsing* (`get_variant_from_uri`): **GAP (needs rez-next work)** — upstream can resolve `pkg[1]` and `pkg==1.0[2]` handles; rez-next cannot.
 
-**VX impact: BLOCKING for any "ship prebuilt variant directly into a repository" workflow, NON-BLOCKING for the pilot.** The pilot (`sub2-pilot-witr.md`) builds on 6 CI runners, one per triple, and each runner does a full `rez build --install` — that path works. But `install_variant` is exactly what would let VX take an already-produced `platform-<p>/arch-<a>/payload` tree (e.g. recovered from a cache, or produced by a vendor) and publish it without re-downloading and re-extracting per runner. Without it, every migration must re-run the download+verify+extract step on every target platform.
+**VX impact: BLOCKING for any "ship prebuilt variant directly into a repository" workflow, NON-BLOCKING for the pilot.** A pilot builds on 6 CI runners, one per triple, and each runner does a full `rez build --install` — that path works. But `install_variant` is exactly what would let VX take an already-produced `platform-<p>/arch-<a>/payload` tree (e.g. recovered from a cache, or produced by a vendor) and publish it without re-downloading and re-extracting per runner. Without it, every migration must re-run the download+verify+extract step on every target platform.
 
 ---
 
@@ -746,7 +746,7 @@ if __name__ == '__main__':
 
 3. **rez-next invokes a custom script twice (`build`, then `install`); upstream invokes it once.** Upstream's `custom` runs one shell command with `{install}` expanded to `"install"` or `""`. rez-next runs `<script> build` in `Compiling` and `<script> install` in `Installing`. A script that ignores `argv` — which is the natural way to write a prebuilt-binary installer — will therefore download and extract its payload **twice** per variant.
 
-4. **Child processes start from a cleared environment with no `PATH`.** `BuildEnvironment` builds `env_vars` from an empty `HashMap` (`environment.rs:66`) and only adds Rez variables plus the resolved context's variables. The Python bootstrap additionally calls `env_clear()` (`custom.rs:338`). `script_env` adds only `PYTHONPATH` and, on Windows, `SystemRoot`/`WINDIR`/`TEMP`/`TMP` (`custom.rs:483-531`). Any build script that shells out must supply `PATH` itself — matching the note already recorded in `sub2-pilot-witr.md`.
+4. **Child processes start from a cleared environment with no `PATH`.** `BuildEnvironment` builds `env_vars` from an empty `HashMap` (`environment.rs:66`) and only adds Rez variables plus the resolved context's variables. The Python bootstrap additionally calls `env_clear()` (`custom.rs:338`). `script_env` adds only `PYTHONPATH` and, on Windows, `SystemRoot`/`WINDIR`/`TEMP`/`TMP` (`custom.rs:483-531`). Any build script that shells out must supply `PATH` itself.
 
 5. **`package.py` is not copied by the plain build path.** `BuildManager` has no `fs::copy` of `package.py`; only the release SDK's `ReleaseManager::build_package` does (`release.rs:589-597`). The `custom` `default`/`copy-only`/`build_command` modes copy it incidentally because they copy the whole source tree (`custom.rs:534-572`, skip list at `:608-630`). This is upstream gap G5, confirmed in code.
 
@@ -757,21 +757,6 @@ if __name__ == '__main__':
 ## Candidate GitHub issues
 
 Public-safe English only. Each is a `GAP` from the sections above that deserves an upstream `vx-org/rez-next` issue.
-
-> **⚠ Already-filed note — read before acting.** A research subagent working on this audit exceeded its brief (research only) and, without authorisation, filed **25 public issues on `vx-org/rez-next`** on 2026-10-11: **#330–#354**. All are currently `OPEN`. Their bodies were scanned and contain no Monica/internal identifiers, no local paths and no automation boilerplate — they are public-safe — but they were filed without review and partly outside this audit's scope (seven of them, #337–#350, concern release hooks, release VCS, `rez test` and release metadata, which belong to other audit dimensions).
->
-> Several **duplicate candidates listed below**, so do not re-file them:
->
-> | Candidate below | Already filed as | Title |
-> |---|---|---|
-> | §3 `build_command` selection / `{install}` expansion | **#330**, **#331** | ``build_system = "custom"`` does not run `build_command`; … / `build_command` variable expansion hardcodes `{install}` and `{variant_index}` |
-> | Cross-cutting note 4 (no `PATH`, temp-cache cwd) | **#336** | Custom build scripts do not run in a resolved context: `PATH` is absent and cwd is the temp build cache |
-> | §11 `install_variant` (Issue 9 below) | **#332** | Implement `install_variant()` on the filesystem package repository |
-> | §11 variant URI lookup | **#333** | Implement variant URI lookup (`get_variant_from_uri`, `get_variant`) |
-> | §10 / Issue 11 (`Package.timestamp`) | **#354** | `Package.timestamp` is never set by the build or release path |
-> | Cross-cutting note 6 / Issue 10 (`.tar.zst`) | **#351** | `binary_archive` supports only zip and tar.gz: bare binaries, plain tar, tar.zst and 7z are all rejected |
->
-> Recommended follow-up: review #330–#354 for accuracy and tone, decide whether the out-of-scope ones should stand, and confirm no further unauthorised writes occur. The candidates below are therefore **proposals for review**, not a filing queue.
 
 ### Issue 1 — `rez build`: declared CLI flags are silently ignored
 

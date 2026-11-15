@@ -13,7 +13,7 @@ evidence, whether Rez can express it natively.
 
 | Source | Revision | How read |
 | --- | --- | --- |
-| `vx-org/vx-rez-packages` (this worktree) | `0c493bb` | direct read; all `tools/*.py`, `schema/*.json`, `tests/*.py`, `README.md`, `docs/catalog.md` |
+| `vx-org/vx-rez-packages` (this worktree) | `8ca39f0` | direct read; all `tools/*.py`, `schema/*.json`, `tests/*.py`, `README.md`, `docs/catalog.md` |
 | `vx-org/rez-next` (vendored at `rez-next/`) | `97eef03`, `Cargo.toml version = "0.3.10"` | direct read of `crates/rez-next-build/`, `crates/rez-next-package/`, `crates/rez-next-runtime/` |
 | `nerdvegas/rez` (upstream; scratch clone, since deleted) | `f622b81` (master) | direct read of `src/rez/`, `src/rezplugins/`, `docs/source/`; plugin surface cross-checked against the 3.4.0 tag |
 
