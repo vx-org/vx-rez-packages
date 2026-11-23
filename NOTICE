@@ -9,6 +9,7 @@ models, sample assets, generated files, upstream packages, and other included
 material remain under their own licenses and notices. Keep those notices with
 any redistribution.
 
-DCC-MCP is an independent project and ecosystem name. This notice does not
-grant rights to third-party trademarks or imply endorsement by a host vendor.
-Commercial distribution contact is welcome, but it is not required.
+VX and vx-rez-packages names and branding identify this project and its
+maintainers. This notice does not grant rights to third-party trademarks or
+imply endorsement by an upstream runtime or host vendor. Commercial
+distribution contact is welcome, but it is not required.
