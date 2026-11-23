@@ -176,3 +176,7 @@ The builder, schema, tests, and release tooling in this repository are available
 under the MIT License in [LICENSE](LICENSE). Generated Rez bundles carry the
 upstream runtime license, third-party notices, and provenance declared by each
 recipe. Those notices remain part of every distributed bundle.
+
+## Attribution and trademarks
+
+The repository tooling remains under the existing MIT license in [LICENSE](LICENSE). Generated bundles preserve each upstream runtime license and third-party notice. Commercial distribution contact is welcome and is not required. See [NOTICE](NOTICE) and [TRADEMARKS.md](TRADEMARKS.md).
