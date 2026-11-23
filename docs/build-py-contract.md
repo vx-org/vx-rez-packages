@@ -1,7 +1,7 @@
 # build.py contract
 
 Status: **proposed**. The mechanism is proven — a real `rez build` run on
-rez-next 0.3.10 produced
+rez-next 0.4.1 produced
 `<prefix>/spike/0.0.1/platform-windows/arch-x86_64/payload/bin/spike.txt`,
 which is the layout VX already publishes. What is still proposed is the wrapper's
 command surface and the environment additions it has to make. Backing evidence is

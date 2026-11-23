@@ -22,7 +22,7 @@ permissions:
   contents: read
 
 env:
-  REZ_SDK_VERSION: "0.3.10"
+  REZ_SDK_VERSION: "0.4.1"
 
 jobs:
   matrix:
