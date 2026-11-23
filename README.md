@@ -169,3 +169,10 @@ Packages are currently assembled by `tools/build_bundle.py` from a declarative
 documented in [build.py contract](docs/build-py-contract.md), with the supporting
 investigation in [rez build spike](docs/spike-rez-build-feasibility.md). Both are
 proposals; the assembly path above is unchanged until a pilot proves the new one.
+
+## Repository license
+
+The builder, schema, tests, and release tooling in this repository are available
+under the MIT License in [LICENSE](LICENSE). Generated Rez bundles carry the
+upstream runtime license, third-party notices, and provenance declared by each
+recipe. Those notices remain part of every distributed bundle.
