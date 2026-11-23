@@ -21,13 +21,20 @@ import urllib.request
 import zipfile
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
 import jsonschema
 import py7zr
 import zstandard
 from py7zr.exceptions import AbsolutePathError, ArchiveError, PasswordRequired
+
+from tools.pack_stage import sha256 as pack_sha256
+from tools.pack_stage import (
+    write_repository_checksums as _write_repository_checksums_impl,
+)
+from tools.pack_stage import (
+    write_reproducible_tar_zstd as _write_reproducible_tar_zstd_impl,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFINITION_SCHEMA = ROOT / "schema" / "bundle-definition.schema.json"
@@ -339,11 +346,7 @@ def _verify_sha256(path: Path, expected: str, label: str) -> None:
 
 
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return pack_sha256(path)
 
 
 def _safe_relative(name: str, *, allow_root: bool = False) -> str:
@@ -955,20 +958,8 @@ def _write_json(path: Path, value: dict) -> None:
     )
 
 
-def _regular_files(root: Path) -> Iterable[Path]:
-    return sorted(
-        (path for path in root.rglob("*") if path.is_file() and not path.is_symlink()),
-        key=lambda path: path.as_posix(),
-    )
-
-
 def _write_repository_checksums(repository: Path, destination: Path) -> None:
-    lines = [
-        f"{_sha256(path)}  {path.relative_to(repository).as_posix()}"
-        for path in _regular_files(repository)
-        if path != destination
-    ]
-    destination.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    _write_repository_checksums_impl(repository, destination)
 
 
 def _normalize_machine(machine: str) -> str:
@@ -1055,30 +1046,9 @@ def _smoke_test(package_root: Path, definition: dict, target: dict) -> None:
 def _write_reproducible_tar_zstd(
     repository: Path, output: Path, release_date: str, *, executable_paths: set[str]
 ) -> None:
-    epoch = int(datetime.fromisoformat(release_date).replace(tzinfo=UTC).timestamp())
-
-    def normalize(info: tarfile.TarInfo) -> tarfile.TarInfo:
-        info.uid = info.gid = 0
-        info.uname = info.gname = ""
-        info.mtime = epoch
-        info.mode = 0o755 if info.isdir() or info.name in executable_paths else 0o644
-        if info.issym():
-            info.mode = 0o777
-        return info
-
-    with output.open("wb") as destination:
-        compressor = zstandard.ZstdCompressor(level=10, threads=0)
-        with (
-            compressor.stream_writer(destination, closefd=False) as compressed,
-            tarfile.open(fileobj=compressed, mode="w|", format=tarfile.PAX_FORMAT) as archive,
-        ):
-            for path in sorted(repository.rglob("*"), key=lambda entry: entry.as_posix()):
-                archive.add(
-                    path,
-                    arcname=path.relative_to(repository).as_posix(),
-                    recursive=False,
-                    filter=normalize,
-                )
+    _write_reproducible_tar_zstd_impl(
+        repository, output, release_date, executable_paths=executable_paths
+    )
 
 
 def main() -> int:

@@ -39,9 +39,12 @@ build_system = "build.py"
 
 Two rules follow, and both are enforceable by test:
 
-- **Never** write `build_system = "custom"`. rez-next resolves that to
-  `Custom("default")`, which is a copy-only build — the script is silently never
-  executed.
+- The wrapper accepts exactly one direct literal `build_system = "build.py"`
+  assignment. It rejects duplicate/indirect declarations and any `build_command`
+  override, which rez-next would otherwise prefer over `build_system`.
+  `default` and `copy-only` perform copying; `build_command` executes a command
+  during installation. None is the wrapper's named-script contract. `custom`
+  is refused without claiming that it universally resolves to copy-only.
 - The named file must sit at the package root, next to `package.py`.
 
 `package.py` remains the pinned, hash-checked, AST-validated, never-executed
@@ -88,8 +91,14 @@ with `runpy.run_path(script, run_name="__main__")`. So:
 ## Environment contract
 
 The child environment is cleared before the script environment is applied, so
-every variable a `build.py` may rely on has to be named here. The wrapper sets
-them; `build.py` reads them.
+every variable a `build.py` may rely on has to be named here. Parent-process
+variables alone do not cross that boundary. The wrapper stages the source,
+preserves the pinned `package.py`, saves the original script as
+`.vx-original-build.py`, and installs a temporary `build.py` bootstrap. An
+adjacent `.vx-build-environment.json` carries only the allowlisted variables in
+`tools/vx_rez_build/bootstrap.py`. Inside the cleared child, the bootstrap restores
+those values and runs the saved script with the original build/install phase.
+Both files stay outside the published payload; the original source is unchanged.
 
 This is not defensive boilerplate. On Windows, a cleared child environment was
 measured to contain `TEMP`, `TMP` and `SystemRoot` and **no `PATH` at all** — a
@@ -175,8 +184,9 @@ vx-rez-build --definition recipe.json --triple <triple> --output-dir <dir>
    be given a repository on the command line.
 5. Copy the pinned `package.py` byte-for-byte to `<name>/<version>/package.py`.
    The plain rez-next build path does not do this; only its release path does.
-6. Set the environment contract — including `PATH`, the `REZ_BUILD_TARGET_*`
-   triple and an absolute `VX_BUILD_RECIPE` — and run
+6. Stage the source and bootstrap described above. Set the parent
+   `REZ_BUILD_TARGET_*` values and carry `PATH`, the absolute `VX_BUILD_RECIPE`
+   and the remaining allowlisted context through the sidecar, then run
    `rez build <source> --install --prefix <repository> --build-system build.py`.
 7. Assert the payload is non-empty (guards the exit-code-only marshalling).
 8. Hand the repository to the pack stage.
@@ -212,6 +222,7 @@ one CI run.
 - `tools/verify_consumer.py` and `tools/cache_bundle.py` pass unchanged against
   the pilot bundle. The zero-symlink, `payload`-naming, `package_root` and
   checksum-coverage invariants are non-negotiable.
-- `build_system = "custom"` is rejected by a test, not by a code review.
+- Ambiguous `build_system` declarations, non-`build.py` modes and
+  `build_command` overrides are rejected by tests.
 - `runtime-release.yml` keeps its current gate structure; only the build step
   command changes.
